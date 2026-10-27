@@ -1,0 +1,328 @@
+{
+  "Comment": "Scheduled inventory scan: create job, dispatch account batches, wait, finalize",
+  "StartAt": "CreateJob",
+  "States": {
+    "CreateJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "create_job",
+          "scheduled_at.$": "$$.Execution.StartTime"
+        }
+      },
+      "ResultSelector": {
+        "job_id.$": "$.Payload.job_id",
+        "skipped.$": "$.Payload.skipped",
+        "full_refresh.$": "$.Payload.full_refresh"
+      },
+      "ResultPath": "$.job",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "IsSkipped",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "CreateJobFailed"
+        }
+      ]
+    },
+    "CreateJobFailed": {
+      "Type": "Fail",
+      "Error": "CreateJobFailed",
+      "Cause": "the planner could not create the scheduled job"
+    },
+    "IsSkipped": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.job.skipped",
+          "BooleanEquals": true,
+          "Next": "Skipped"
+        }
+      ],
+      "Default": "ListTargets"
+    },
+    "Skipped": {
+      "Type": "Succeed"
+    },
+    "ListTargets": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "list_targets",
+          "job_id.$": "$.job.job_id"
+        }
+      },
+      "ResultSelector": {
+        "accounts.$": "$.Payload.accounts"
+      },
+      "ResultPath": "$.targets",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FinalizeWithError"
+        }
+      ],
+      "Next": "DispatchAccounts"
+    },
+    "DispatchAccounts": {
+      "Type": "Map",
+      "ItemsPath": "$.targets.accounts",
+      "ItemBatcher": {
+        "MaxItemsPerBatch": 50,
+        "BatchInput": {
+          "job_id.$": "$.job.job_id"
+        }
+      },
+      "MaxConcurrency": 10,
+      "ToleratedFailurePercentage": 10,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "DispatchBatch",
+        "States": {
+          "DispatchBatch": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${planner_function_arn}",
+              "Payload": {
+                "action": "dispatch_batch",
+                "BatchInput.$": "$.BatchInput",
+                "Items.$": "$.Items"
+              }
+            },
+            "OutputPath": "$.Payload",
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.TooManyRequestsException",
+                  "Lambda.SdkClientException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "MarkDispatchedWithError"
+        }
+      ],
+      "Next": "MarkDispatched"
+    },
+    "MarkDispatched": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "mark_dispatched",
+          "job_id.$": "$.job.job_id"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FinalizeWithError"
+        }
+      ],
+      "Next": "WaitForWorkers"
+    },
+    "MarkDispatchedWithError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "mark_dispatched",
+          "job_id.$": "$.job.job_id",
+          "error.$": "$.error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FinalizeWithError"
+        }
+      ],
+      "Next": "WaitForWorkers"
+    },
+    "WaitForWorkers": {
+      "Type": "Wait",
+      "Seconds": 300,
+      "Next": "CheckProgress"
+    },
+    "CheckProgress": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "check_progress",
+          "job_id.$": "$.job.job_id"
+        }
+      },
+      "ResultSelector": {
+        "done.$": "$.Payload.done"
+      },
+      "ResultPath": "$.progress",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.progress_error",
+          "Next": "WaitForWorkers"
+        }
+      ],
+      "Next": "IsDone"
+    },
+    "IsDone": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.progress.done",
+          "BooleanEquals": true,
+          "Next": "Finalize"
+        }
+      ],
+      "Default": "WaitForWorkers"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "finalize",
+          "job_id.$": "$.job.job_id"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    },
+    "FinalizeWithError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${planner_function_arn}",
+        "Payload": {
+          "action": "finalize",
+          "job_id.$": "$.job.job_id",
+          "error.$": "$.error"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Failed"
+    },
+    "Failed": {
+      "Type": "Fail",
+      "Error": "ScanRunFailed",
+      "Cause": "see scan_job.error"
+    }
+  }
+}
