@@ -1,0 +1,25 @@
+[
+  {
+    "name": "default",
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {}
+  },
+  {
+    "name": "default",
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {}
+  },
+  {
+    "name": "web",
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {
+      "Env": "prod"
+    }
+  }
+]

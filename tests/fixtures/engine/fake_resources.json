@@ -1,0 +1,13 @@
+{
+  "Test::Parent": [
+    {"Id": "p-1", "Name": "parent-one", "Tags": [{"Key": "Env", "Value": "prod"}]},
+    {"Id": "p-2", "Name": "parent-two", "Tags": []}
+  ],
+  "Test::Child": [
+    {"Id": "c-1", "Parent": "p-1"},
+    {"Id": "c-2", "Parent": "p-2"}
+  ],
+  "Test::Solo": [
+    {"Id": "s-1"}
+  ]
+}

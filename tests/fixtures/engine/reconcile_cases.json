@@ -1,0 +1,44 @@
+[
+  {
+    "name": "new resource is created",
+    "index": {},
+    "current": [{"id": "r-1", "hash": "aa"}],
+    "kept": [],
+    "expected": {"created": 1, "updated": 0, "unchanged": 0, "deleted_ids": [], "upsert_ids": ["r-1"]}
+  },
+  {
+    "name": "previously deleted resource reappears as created",
+    "index": {"r-1": {"hash": "aa", "deleted": true}},
+    "current": [{"id": "r-1", "hash": "aa"}],
+    "kept": [],
+    "expected": {"created": 1, "updated": 0, "unchanged": 0, "deleted_ids": [], "upsert_ids": ["r-1"]}
+  },
+  {
+    "name": "changed hash is updated, same hash is unchanged",
+    "index": {"r-1": {"hash": "aa", "deleted": false}, "r-2": {"hash": "bb", "deleted": false}},
+    "current": [{"id": "r-1", "hash": "a2"}, {"id": "r-2", "hash": "bb"}],
+    "kept": [],
+    "expected": {"created": 0, "updated": 1, "unchanged": 1, "deleted_ids": [], "upsert_ids": ["r-1"]}
+  },
+  {
+    "name": "missing live resources are deleted, already deleted ones are not",
+    "index": {"r-1": {"hash": "aa", "deleted": false}, "r-2": {"hash": "bb", "deleted": false}, "r-3": {"hash": "cc", "deleted": true}},
+    "current": [{"id": "r-1", "hash": "aa"}],
+    "kept": [],
+    "expected": {"created": 0, "updated": 0, "unchanged": 1, "deleted_ids": ["r-2"], "upsert_ids": []}
+  },
+  {
+    "name": "kept resources are unchanged and never deleted",
+    "index": {"r-1": {"hash": "aa", "deleted": false}, "r-2": {"hash": "bb", "deleted": false}},
+    "current": [],
+    "kept": ["r-1", "r-2"],
+    "expected": {"created": 0, "updated": 0, "unchanged": 2, "deleted_ids": [], "upsert_ids": []}
+  },
+  {
+    "name": "empty listing deletes everything that was live",
+    "index": {"r-1": {"hash": "aa", "deleted": false}},
+    "current": [],
+    "kept": [],
+    "expected": {"created": 0, "updated": 0, "unchanged": 0, "deleted_ids": ["r-1"], "upsert_ids": []}
+  }
+]

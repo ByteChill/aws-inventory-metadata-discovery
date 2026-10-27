@@ -1,0 +1,25 @@
+{
+  "vpcs": [
+    {"key": "main", "cidr": "10.20.0.0/16", "tags": {"Name": "main", "Env": "prod"}}
+  ],
+  "subnets": [
+    {"key": "private-a", "vpc": "main", "cidr": "10.20.1.0/24", "tags": {"Name": "private-a"}}
+  ],
+  "security_groups": [
+    {"key": "web", "vpc": "main", "name": "web", "description": "web tier", "tags": {"Env": "prod"}}
+  ],
+  "instances": [
+    {"key": "web-01", "subnet": "private-a", "security_groups": ["web"], "tags": {"Name": "web-01", "Role": "web"}},
+    {"key": "old-01", "subnet": "private-a", "security_groups": ["web"], "tags": {"Name": "old-01"}, "terminate": true}
+  ],
+  "images": [
+    {"key": "web-ami", "instance": "web-01", "name": "web-ami-2026-10", "tags": {"Name": "web-ami"}}
+  ],
+  "missing_ids": {
+    "AWS::EC2::VPC": "vpc-0123456789abcdef0",
+    "AWS::EC2::Subnet": "subnet-0123456789abcdef0",
+    "AWS::EC2::SecurityGroup": "sg-0123456789abcdef0",
+    "AWS::EC2::Instance": "i-0123456789abcdef0",
+    "AWS::EC2::Image": "ami-0123456789abcdef0"
+  }
+}

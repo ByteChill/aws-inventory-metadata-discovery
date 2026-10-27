@@ -1,0 +1,14 @@
+{
+  "vpc_a_v1": {"resource_type": "AWS::EC2::VPC", "account_id": "123456789012", "region": "eu-west-1", "resource_id": "vpc-0a",
+               "arn": "arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a", "name": "main", "tags": {"Name": "main", "Env": "prod"},
+               "relations": {}, "data": {"VpcId": "vpc-0a", "CidrBlock": "10.0.0.0/16", "State": "available"}},
+  "vpc_a_v2": {"resource_type": "AWS::EC2::VPC", "account_id": "123456789012", "region": "eu-west-1", "resource_id": "vpc-0a",
+               "arn": "arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a", "name": "main", "tags": {"Name": "main", "Env": "staging"},
+               "relations": {}, "data": {"VpcId": "vpc-0a", "CidrBlock": "10.0.0.0/16", "State": "available"}},
+  "vpc_b": {"resource_type": "AWS::EC2::VPC", "account_id": "123456789012", "region": "eu-west-1", "resource_id": "vpc-0b",
+            "arn": "arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0b", "name": null, "tags": {},
+            "relations": {}, "data": {"VpcId": "vpc-0b", "CidrBlock": "172.31.0.0/16", "IsDefault": true}},
+  "ami_x": {"resource_type": "AWS::EC2::Image", "account_id": "210987654321", "region": "us-east-1", "resource_id": "ami-0x",
+            "arn": "arn:aws:ec2:us-east-1::image/ami-0x", "name": "golden", "tags": {"Name": "golden"},
+            "relations": {"snapshot_ids": ["snap-1"]}, "data": {"ImageId": "ami-0x", "CreationDate": "2026-10-01T00:00:00.000Z"}}
+}
