@@ -76,6 +76,7 @@ def test_error_mapping(response: str, error_type: type[Exception], retryable: bo
     assert info.value.retryable is retryable  # type: ignore[attr-defined]
 
 
+@pytest.mark.usefixtures("frozen_time")  # the fixture credentials expire at 09:00Z
 def test_session_uses_broker_credentials() -> None:
     session = provider(FakeTransport("get_credentials.ok.response.json")).session("123456789012")
 
