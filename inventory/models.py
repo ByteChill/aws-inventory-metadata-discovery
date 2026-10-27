@@ -401,6 +401,7 @@ class ScanJob(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     deadline_at: datetime | None = None
+    requested_by: str | None = None
 
     @property
     def full_refresh(self) -> bool:

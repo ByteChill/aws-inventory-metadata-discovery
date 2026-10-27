@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.engine import RowMapping
 from starlette.convertors import PathConvertor, StringConvertor, register_url_convertor
 
+from inventory.api.auth import require
 from inventory.api.errors import ValidationFailedError
 from inventory.api.queries import GROUPABLE, PageRequest, ResourceFilters, ResourceQueries
 from inventory.api.schemas import (
@@ -30,7 +31,9 @@ from inventory.api.state import ApiState, get_state
 from inventory.config import GLOBAL_REGION
 from inventory.errors import NotFoundError
 
-router = APIRouter(prefix="/v1", tags=["resources"])
+router = APIRouter(
+    prefix="/v1", tags=["resources"], dependencies=[Depends(require("resources:read"))]
+)
 State = Annotated[ApiState, Depends(get_state)]
 
 

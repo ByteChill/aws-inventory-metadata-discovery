@@ -34,6 +34,7 @@ pyproject.toml / uv.lock     唯一的项目配置与依赖锁
 Makefile                     常用命令
 compose.yaml                 本地依赖：PostgreSQL、Redis、moto server（podman compose）
 deploy/                      镜像构建（Containerfile、build.sh、versions.json）与离线 DDL（ddl.sh）
+web/                         Web UI（React + baseui + Vite），构建后由 API 在 /ui/ 提供
 inventory/                   唯一的 Python 包
   config.py                  所有配置（pydantic-settings）
   errors.py                  错误类型
@@ -77,6 +78,8 @@ make queues       # 在 moto 中创建各 region 的扫描队列（按名字查�
 make check        # ruff + mypy + 单元测试
 make test-int     # 集成测试（需要 make up）
 make cov          # 全部测试 + 覆盖率
+make web          # 构建 Web UI 到 web/dist（需要 Node 22）
+make web-dev      # Vite 开发服务器（:5173）
 make images       # 构建 4 个组件镜像（linux/amd64），见下文「发布」
 make ddl          # 生成全部迁移的离线 SQL 到 dist/ddl/
 make down         # 停止本地依赖
@@ -91,7 +94,9 @@ uv run uvicorn --factory inventory.api.app:create_app --reload --port 8080    # 
 uv run python -m inventory.handlers.worker                   # worker（使用 .env 中的 WORKER_REGION）
 ```
 
-API 启动后浏览器打开 <http://localhost:8080/ui/>：查看资源与统计、触发扫描并跟踪进度、查看账号覆盖情况（[spec 07 §9](docs/specs/07-api-service.md#9-内置-uiui)）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
+Web UI（[spec 10](docs/specs/10-web-ui-and-auth.md)，baseui）：需要 Node 22。`make web` 构建到 `web/dist`，启动 API 时设置 `API_UI_DIR=web/dist`，浏览器打开 <http://localhost:8080/ui/>；改界面时用 `make web-dev`（Vite，端口 5173，`/v1` 代理到 8080）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
+
+认证默认关闭（`API_AUTH_MODE=disabled`，所有调用方都是 admin）。接入 SSO 后设置 `API_AUTH_MODE=enforced` 与 `API_JWT_JWKS_URL`、`API_JWT_ISSUER`、`API_JWT_AUDIENCE`；用户用 SSO 的 JWT，其他服务用 admin 在 UI 中创建的 API key（`X-API-Key`）。见 [api.md §1.5](docs/api.md)。
 
 macOS 的"隔空播放接收器"默认占用 5000 端口：可在系统设置中关闭，或运行 `uv run moto_server -p 5001` 并把 `.env` 中的 `localhost:5000` 改为 `localhost:5001`。
 

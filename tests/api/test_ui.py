@@ -1,34 +1,37 @@
-"""Built-in UI (spec 07 §9). Static routes need no database, so these are unit tests."""
+"""Serving the built web UI (spec 10 §6) and checks on its source. Static routes need no
+database, so these are unit tests; a tiny fixture build stands in for web/dist."""
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
 
-from inventory.api.app import UI_DIR, create_app
+from inventory.api.app import create_app
 from inventory.config import ApiSettings
-from tests.helpers import assert_matches_fixture, load_fixture
+from tests.helpers import assert_matches_fixture, fixture_path, load_fixture
 
-# '/v1/...' string literals and `/v1/...${x}...` templates in app.js
+WEB_SRC = Path(__file__).parents[2] / "web" / "src"
+FIXTURE_UI = str(fixture_path("api/ui"))
+# '/v1/...' string literals and `/v1/...${x}...` templates in the API client
 _JS_PATH = re.compile(r"""['`](/v1/[^'`?]*)['`]""")
-# every `href: <expr>` in app.js: a literal, or hashFor() which always returns '#/...'
-_HREF = re.compile(r"""href:\s*(hashFor\(|['`])""")
-_ANY_HREF = re.compile(r"""href:""")
 
 
 def ui_client(**settings: Any) -> TestClient:
     # no `with`: the lifespan (database, AWS clients) is not needed for static routes
-    return TestClient(create_app(ApiSettings(**settings)))
+    return TestClient(create_app(ApiSettings(**({"ui_dir": FIXTURE_UI} | settings))))
 
 
 def normalise(path: str) -> str:
     return re.sub(r"\$\{[^}]*\}|\{[^}]*\}", "{}", path)
 
 
-def app_js() -> str:
-    return (UI_DIR / "app.js").read_text(encoding="utf-8")
+def web_sources() -> dict[str, str]:
+    return {
+        str(p.relative_to(WEB_SRC)): p.read_text(encoding="utf-8") for p in WEB_SRC.rglob("*.ts*")
+    }
 
 
 def test_ui_page_assets_and_security_headers() -> None:
@@ -75,13 +78,19 @@ def test_ui_can_be_disabled() -> None:
     assert client.get("/", follow_redirects=False).status_code == 404
 
 
+def test_unbuilt_ui_is_not_mounted(tmp_path: Path) -> None:
+    client = ui_client(ui_dir=str(tmp_path))
+    assert client.get("/ui/").status_code == 404
+    assert client.get("/healthz").status_code == 200
+
+
 def test_ui_is_not_part_of_the_openapi_contract() -> None:
-    paths = create_app(ApiSettings()).openapi()["paths"]
+    paths = create_app(ApiSettings(ui_dir=FIXTURE_UI)).openapi()["paths"]
     assert not [p for p in paths if p == "/" or p.startswith("/ui")]
 
 
 def test_ui_only_calls_documented_endpoints() -> None:
-    used = sorted({normalise(p) for p in _JS_PATH.findall(app_js())})
+    used = sorted({normalise(p) for src in web_sources().values() for p in _JS_PATH.findall(src)})
     assert_matches_fixture(used, "api/ui.endpoints.expected.json")
 
     documented = {normalise(p) for p in load_fixture("api/openapi.json")["paths"]}
@@ -89,12 +98,13 @@ def test_ui_only_calls_documented_endpoints() -> None:
 
 
 def test_ui_does_not_inject_html() -> None:
-    # API data is untrusted (spec 07 §9.2): the page builds DOM nodes, never HTML strings,
-    # and every link is built from a fixed '#'/'/' prefix (no javascript: URLs from data)
-    source = app_js()
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
-        assert sink not in source, sink
-    assert len(_HREF.findall(source)) == len(_ANY_HREF.findall(source)) > 0
-    assert "return `#/${page}" in source  # hashFor's only return
-    for literal in re.findall(r"""href:\s*[`']([^`']*)""", source):
-        assert literal.startswith(("#", "/")), literal
+    # API data is untrusted (spec 10 §5): React renders it as text, never as HTML
+    for name, source in web_sources().items():
+        for sink in (
+            "dangerouslySetInnerHTML",
+            "innerHTML",
+            "outerHTML",
+            "document.write",
+            "eval(",
+        ):
+            assert sink not in source, (name, sink)

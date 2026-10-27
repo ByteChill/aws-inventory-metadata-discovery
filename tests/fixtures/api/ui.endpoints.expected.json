@@ -1,5 +1,8 @@
 [
   "/v1/accounts/{}/coverage",
+  "/v1/api-keys",
+  "/v1/api-keys/{}",
+  "/v1/me",
   "/v1/resource-types",
   "/v1/resources",
   "/v1/resources/by-arn",

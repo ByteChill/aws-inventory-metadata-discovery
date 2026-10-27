@@ -18,7 +18,8 @@ inventory/api/errors.py       # 异常处理器、ErrorResponse
 inventory/api/schemas.py      # 与 api.md 一一对应的 pydantic 模型
 inventory/api/resources.py    # /v1/resources*（含路径形式 /all、/{account}/{region}/{type|arn}）、/v1/resource-types、/v1/accounts/{id}/coverage
 inventory/api/scans.py        # /v1/scans*、/v1/resources/refresh
-inventory/api/ui/             # 内置 UI 静态页面（§9）：index.html、app.js、style.css
+inventory/api/auth.py, keys.py # 认证、RBAC、/v1/me 与 API key（spec 10）
+inventory/api/ui/             # 构建好的 web UI（镜像中由 web/ 构建，不进 git；spec 10）
 inventory/transport.py        # RefreshExecutor 接口 + InlineRefreshExecutor
 tests/api/...  tests/fixtures/api/...
 ```
@@ -36,7 +37,7 @@ tests/api/...  tests/fixtures/api/...
 | `refresh_max_arns` | 100 | |
 | `tracing_enabled` | false | |
 | `otlp_endpoint` | `http://localhost:4317` | ADOT sidecar |
-| `ui_enabled` | true | 是否挂载 `/ui`（§9） |
+| `ui_enabled` | true | 是否挂载 `/ui`；`ui_dir`、认证相关设置见 spec 10 |
 
 ## 2. 应用结构
 
@@ -128,44 +129,7 @@ tests/api/...  tests/fixtures/api/...
 
 ## 9. 内置 UI（`/ui`）
 
-给开发与运维在内网浏览器里查看资源、触发扫描并跟踪进度的简单页面，不替代 API，也不承载业务逻辑。
-
-### 9.1 实现
-
-- 静态文件放在 `inventory/api/ui/`（`index.html`、`app.js`、`style.css`），由 `StaticFiles(html=True)` 挂载到 `/ui`；`GET /` 与 `GET /ui` 用相对地址重定向到 `/ui/`（Starlette 自带的补斜杠重定向会用 Host 头拼绝对地址）。`ui_enabled=false` 时都不注册。
-- 原生 HTML + JS，无构建步骤、无第三方库、不访问 CDN（API 部署在私有 VPC）。
-- 只调用 api.md 中已有的 `/v1` 接口，不为 UI 新增后端接口；新增或修改 UI 用到的接口时同样遵守 §8。
-- 不进入 OpenAPI（挂载本身不会出现在 OpenAPI 中，重定向路由为 `include_in_schema=False`）。
-- 认证与 API 一致：依赖内部 ALB 与网络边界，没有单独的登录。
-
-### 9.2 安全
-
-- 资源名、tag、`data` 来自被扫描账号，视为不可信：渲染一律用 `textContent` / `createElement`，不用 `innerHTML` 拼接数据。
-- 静态文件响应头：`Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`，以及 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（靠 ETag 重新验证，发布后不会继续使用旧的 `app.js`）。
-- 不使用浏览器存储保存数据。
-
-### 9.3 页面（hash 路由）
-
-| 路由 | 内容 | 调用的接口 |
-|---|---|---|
-| `#/resources` | 过滤（account、region、type、name 前缀、tag、含已删除）、结果表、总数、"加载更多"（cursor）；点击行打开详情 | `GET /v1/resources`（`with_total=true`）、`GET /v1/resource-types`（下拉选项） |
-| 资源详情（同页面板） | 主要字段与 `data` JSON；"从 AWS 刷新"；"扫描该账号/region/类型"跳到扫描表单并预填 | `GET /v1/resources/by-arn`、`POST /v1/resources/refresh`（`wait_seconds=20`） |
-| `#/overview` | 按类型、按 region 的数量统计；已注册类型及其可扫描 region | `GET /v1/resources/stats`、`GET /v1/resource-types` |
-| `#/scans` | 触发表单（见 9.4）；最近的 job 列表（按状态、trigger、账号过滤，加载更多） | `POST /v1/scans`、`GET /v1/scans` |
-| `#/scans/<job_id>` | job 状态、scope、统计、进度、错误；task 列表（含 task 的 `error_code`）及每个类型的结果，仅当 `tasks_total ≤ 200` 时获取（定时扫描有上千个 task，只显示数量）；非终态时每 2 秒轮询，离开页面即停止；"按相同 scope 重新扫描" | `GET /v1/scans/{job_id}`（小 job 加 `include_tasks=true`）、`POST /v1/scans` / `POST /v1/resources/refresh` |
-| `#/coverage/<account_id>` | 账号各 region × 类型的扫描状态、数量、最近成功时间与错误；每行"扫描"按钮 | `GET /v1/accounts/{account_id}/coverage`、`POST /v1/scans` |
-
-### 9.4 扫描触发流程
-
-1. 选择粒度：账号 / 账号 + region / 账号 + 类型（region 可选，留空表示所有可扫描 region）/ 单个 ARN。region、类型下拉来自 `/v1/resource-types`（类型随所选 region 过滤，`global` region 只列 global 类型）。
-2. 提交 `POST /v1/scans`（`wait_seconds` 默认 0，可填 0–25）。客户端只做必填检查，其余校验以服务端为准，422 时显示服务端消息。
-3. 成功后跳转到 `#/scans/<job_id>`；`deduplicated=true` 时提示"已有相同 scope 的 job 在运行，显示的是该 job"。
-4. 详情页轮询直到 `succeeded | partial | failed | timed_out`。
-5. 入口：扫描页表单、资源详情、覆盖情况页每一行、job 详情的"重新扫描"。
-
-### 9.5 错误显示
-
-所有失败请求显示 HTTP 状态、`error.code`、`error.message` 与 `request_id`（取自响应体或 `X-Request-ID` 头），方便按 request_id 检索日志。
+已由 [spec 10](10-web-ui-and-auth.md) 的 baseui UI 取代（原生 JS 页面已删除）；API 的认证与权限也见 spec 10。
 
 ## 测试要求
 
@@ -181,7 +145,7 @@ tests/api/...  tests/fixtures/api/...
 | 扫描：各种 scope 校验（类型不带 region 时展开到已启用 ∩ 受支持 region；不可扫描的 scope 422 且不建 job，`api/scan.unscannable.*.json`）、去重、`wait_seconds` 内完成返回 200、超时返回 202；task 的 `error_code` / `error_message` 返回（`api/scan.task_failed.*.json`） | PG + moto SQS + 假 worker（测试中直接更新 task 状态） |
 | 刷新：updated / unchanged / deleted / not_found / unsupported_type / ACCOUNT_UNRESOLVED / ACCOUNT_AMBIGUOUS；缺少 endpoint 时走队列；超过 20 个转异步 | PG + moto（EC2）+ 假 broker transport；`api/refresh.*.json` |
 | OpenAPI 快照 | `api/openapi.json` |
-| UI：`/ui/` 返回页面与 §9.2 的安全头；静态资源可访问；`/`、`/ui` 相对重定向；缺失文件为标准 404；`ui_enabled=false` 时 404；`app.js` 引用的 `/v1` 路径都存在于 OpenAPI；不使用 HTML 注入接口、链接只由固定前缀构造 | `api/ui.expected.json`、`api/ui.endpoints.expected.json` |
+| UI：见 spec 10 的测试要求 | `api/ui.*.json`、`tests/fixtures/api/ui/` |
 
 ## 验收标准
 

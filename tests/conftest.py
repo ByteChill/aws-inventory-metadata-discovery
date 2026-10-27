@@ -71,7 +71,7 @@ TEST_DB_URL = os.environ.get(
     "INVENTORY_TEST_DATABASE_URL",
     "postgresql+psycopg://inventory:inventory@localhost:5432/inventory_test",
 )
-TABLES = ("scan_task", "scan_job", "scope_state", "account_region", "resource")
+TABLES = ("scan_task", "scan_job", "scope_state", "account_region", "resource", "api_key")
 
 
 def run_migrations(url: str, revision: str = "head", *, downgrade: bool = False) -> None:

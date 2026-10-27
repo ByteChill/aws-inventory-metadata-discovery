@@ -18,6 +18,8 @@
 |---|---|---|
 | `X-Request-ID` | 请求（可选）/ 响应（总有） | 客户端可传入自己的 ID（≤128 字符，`[A-Za-z0-9._-]`），否则服务端生成 ULID。该 ID 会出现在本次调用产生的所有日志中，包括 worker 与 broker |
 | `X-Trace-Id` | 响应 | 开启 tracing（`API_TRACING_ENABLED=true`）时返回 X-Ray trace id |
+| `Authorization: Bearer <jwt>` | 请求 | 用户：内部 SSO 签发的 JWT（§1.5） |
+| `X-API-Key: inv_...` | 请求 | 服务：API key（§1.5、§3.13） |
 
 ### 1.2 错误格式
 
@@ -37,6 +39,8 @@
 | HTTP | code | 场景 |
 |---|---|---|
 | 400 | `BAD_REQUEST` | 无法解析的请求，如非法 cursor |
+| 401 | `UNAUTHENTICATED` | 没有凭证、凭证无效 / 过期 / 已撤销（§1.5） |
+| 403 | `FORBIDDEN` | 已认证但没有该接口需要的权限（§1.5） |
 | 404 | `NOT_FOUND` | 资源或 job 不存在 |
 | 422 | `VALIDATION_ERROR` | 参数校验失败 |
 | 403 | `ACCOUNT_ACCESS_DENIED` | broker 拒绝该账号（刷新结果中的 `error.code`） |
@@ -63,6 +67,21 @@
 ### 1.4 长轮询 `wait_seconds`
 
 触发类接口支持 `wait_seconds`（0–25）。在时限内 job 到达终态返回 `200`，否则返回 `202` 与 job 当前状态，客户端用 `GET /v1/scans/{job_id}` 继续查询。
+
+### 1.5 认证与权限
+
+`API_AUTH_MODE=disabled`（默认）时不校验凭证，所有调用方都是拥有全部权限的 `anonymous`。`enforced` 时每个 `/v1` 请求必须带且只带一种凭证：
+
+- **用户**：`Authorization: Bearer <jwt>`，由内部 SSO 签发；校验签名（JWKS）、`exp`、`iss`、`aud`。用户名（默认 claim `preferred_username`）必须是 8 位数字；角色来自 `roles` claim，没有可识别的角色时为 `viewer`。
+- **服务**：`X-API-Key`，由 admin 通过 §3.13 创建，角色在创建时指定；只能在 `enforced` 时创建和管理（`disabled` 时所有调用方都是 admin，那时创建的 key 会在开启认证后继续有效，因此拒绝，返回 403）。
+
+| 角色 | 权限 |
+|---|---|
+| `viewer` | 读资源、统计、覆盖情况、扫描 job（`resources:read`、`scans:read`） |
+| `operator` | viewer + 触发扫描与刷新（`scans:write`） |
+| `admin` | operator + 管理 API key（`api_keys:manage`） |
+
+没有凭证或凭证无效返回 401 `UNAUTHENTICATED`（响应头 `WWW-Authenticate: Bearer`）；权限不足返回 403 `FORBIDDEN`。`/healthz`、`/readyz`、`/ui/`、`/docs`、`/openapi.json` 不需要认证。每个接口需要的权限见 [spec 10 §1](specs/10-web-ui-and-auth.md)。
 
 ## 2. 数据结构
 
@@ -126,6 +145,7 @@
   "scope": {"account_id": "123456789012", "region": "eu-west-1"},
   "status": "running",
   "request_id": "01JBX6Y7Z8A9B0C1D2E3F4G5H6",
+  "requested_by": "10000002",
   "deduplicated": false,
   "created_at": "2026-10-27T08:00:00Z",
   "started_at": "2026-10-27T08:00:01Z",
@@ -137,6 +157,7 @@
 
 - `status`：`queued | running | succeeded | partial | failed | timed_out`。`partial` 表示部分 task 或部分类型失败。
 - `tasks` 仅在 `include_tasks=true` 时返回，元素为 ScanTask。
+- `requested_by`：触发者，用户为 8 位用户名，API key 为 `apikey:<key_id>`，关闭认证时为 `anonymous`；定时扫描为 `null`。
 
 ### 2.4 ScanTask
 
@@ -367,12 +388,36 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 
 两者不记录访问日志。
 
-### 3.12 内置 UI
+### 3.12 Web UI
 
-- `GET /ui/`：浏览资源、触发扫描并跟踪进度的静态页面（实现见 [spec 07 §9](specs/07-api-service.md#9-内置-uiui)），只调用本文档中的 `/v1` 接口。
+- `GET /ui/`：面向消费者的看板与扫描管理界面（baseui，实现见 [spec 10](specs/10-web-ui-and-auth.md)），只调用本文档中的 `/v1` 接口，按 `/v1/me` 返回的权限显示操作。
 - `GET /`：重定向到 `/ui/`。
-- 不属于 API 契约，不出现在 OpenAPI 中；`API_UI_ENABLED=false` 时不提供。
+- 不属于 API 契约，不出现在 OpenAPI 中；`API_UI_ENABLED=false` 或 UI 未构建时不提供。
 
-### 3.13 预留
+### 3.13 认证与 API key
+
+`GET /v1/me`（已认证即可）：
+
+```json
+{"subject": "10000002", "kind": "user", "roles": ["operator"], "permissions": ["resources:read", "scans:read", "scans:write"], "auth_mode": "enforced"}
+```
+
+`kind`：`user | service | anonymous`。
+
+以下接口需要 `api_keys:manage`（admin），且只在 `API_AUTH_MODE=enforced` 时可用（否则 403 `FORBIDDEN`）：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /v1/api-keys` | `{"items": [ApiKey]}`，按创建时间倒序，含已撤销的 |
+| `POST /v1/api-keys` | body `{"name": "cmdb-sync", "roles": ["viewer"], "expires_at": "2027-01-01T00:00:00Z"}`（`expires_at` 可省略）→ 201 `{"key": ApiKey, "secret": "inv_<key_id>_<secret>"}`。`secret` 只在此时返回一次，服务端只存哈希 |
+| `DELETE /v1/api-keys/{key_id}` | 撤销 → 204；不存在或已撤销 → 404 |
+
+```json
+{"key_id": "01JBX9...", "name": "cmdb-sync", "roles": ["viewer"], "created_by": "10000003", "created_at": "2026-10-28T08:00:00Z", "expires_at": null, "revoked_at": null, "last_used_at": "2026-10-28T09:12:00Z"}
+```
+
+`last_used_at` 最多每 5 分钟更新一次。
+
+### 3.14 预留
 
 `/v1/history/*` 当前返回 501 `NOT_IMPLEMENTED`。设计见 [specs/09-reserved-extensions.md](specs/09-reserved-extensions.md)。

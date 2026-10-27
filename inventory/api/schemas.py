@@ -109,6 +109,7 @@ class ScanJobOut(BaseModel):
     scope: dict[str, Any]
     status: JobStatus
     request_id: str | None = None
+    requested_by: str | None = None
     deduplicated: bool = False
     created_at: datetime
     started_at: datetime | None = None
@@ -176,3 +177,49 @@ class ResourceTypeOut(BaseModel):
 
 class ResourceTypesResponse(BaseModel):
     items: list[ResourceTypeOut]
+
+
+# --------------------------------------------------------------------------- auth (spec 10)
+
+RoleName = Literal["viewer", "operator", "admin"]
+
+
+class MeOut(BaseModel):
+    subject: str
+    kind: Literal["user", "service", "anonymous"]
+    roles: list[RoleName]
+    permissions: list[str]
+    auth_mode: Literal["disabled", "enforced"]
+
+
+class ApiKeyOut(BaseModel):
+    key_id: str
+    name: str
+    roles: list[RoleName]
+    created_by: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+class ApiKeyList(BaseModel):
+    items: list[ApiKeyOut]
+
+
+class ApiKeyCreate(_Request):
+    name: str = Field(min_length=1, max_length=100)
+    roles: list[RoleName] = Field(min_length=1)
+    expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        return value
+
+
+class ApiKeyCreated(BaseModel):
+    key: ApiKeyOut
+    secret: str  # shown once; only its hash is stored

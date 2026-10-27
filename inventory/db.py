@@ -124,6 +124,21 @@ scan_job = Table(
     Column("started_at", TS),
     Column("finished_at", TS),
     Column("deadline_at", TS),
+    Column("requested_by", Text),  # principal.subject; NULL for scheduled jobs
+)
+
+api_key = Table(
+    "api_key",
+    metadata,
+    Column("key_id", Text, primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("key_hash", LargeBinary, nullable=False),
+    Column("roles", ARRAY(Text), nullable=False),
+    Column("created_by", Text, nullable=False),
+    Column("created_at", TS, nullable=False),
+    Column("expires_at", TS),
+    Column("revoked_at", TS),
+    Column("last_used_at", TS),
 )
 
 scan_task = Table(
@@ -564,6 +579,7 @@ class JobRepository:
         trigger: Trigger,
         scope: ScanScope,
         request_id: str | None = None,
+        requested_by: str | None = None,
         flags: Mapping[str, Any] | None = None,
         deadline_at: datetime | None = None,
         now: datetime | None = None,
@@ -581,6 +597,7 @@ class JobRepository:
                     scope_hash=scope_hash,
                     status="queued",
                     request_id=request_id,
+                    requested_by=requested_by,
                     flags=dict(flags or {}),
                     stats={},
                     created_at=when,
@@ -1022,3 +1039,63 @@ def terminal_job_status(task_statuses: Sequence[str]) -> str:
     if all(s == "failed" for s in counted):
         return "failed"
     return "partial"
+
+
+# --------------------------------------------------------------------------- API keys
+
+
+class ApiKeyRepository:
+    """API keys for service callers (spec 10); only the SHA-256 of the secret is stored."""
+
+    def create(
+        self,
+        conn: Connection,
+        *,
+        key_id: str,
+        name: str,
+        key_hash: bytes,
+        roles: Sequence[str],
+        created_by: str,
+        expires_at: datetime | None,
+        now: datetime | None = None,
+    ) -> RowMapping:
+        row = conn.execute(
+            api_key.insert()
+            .values(
+                key_id=key_id,
+                name=name,
+                key_hash=key_hash,
+                roles=list(roles),
+                created_by=created_by,
+                created_at=now or utcnow(),
+                expires_at=expires_at,
+            )
+            .returning(api_key)
+        ).mappings()
+        return row.one()
+
+    def get(self, conn: Connection, key_id: str) -> RowMapping | None:
+        return conn.execute(select(api_key).where(api_key.c.key_id == key_id)).mappings().first()
+
+    def list(self, conn: Connection) -> list[RowMapping]:
+        rows = conn.execute(select(api_key).order_by(api_key.c.created_at.desc())).mappings()
+        return list(rows)
+
+    def revoke(self, conn: Connection, key_id: str, now: datetime | None = None) -> bool:
+        result = conn.execute(
+            update(api_key)
+            .where(api_key.c.key_id == key_id, api_key.c.revoked_at.is_(None))
+            .values(revoked_at=now or utcnow())
+        )
+        return result.rowcount > 0
+
+    def touch(self, conn: Connection, key_id: str, now: datetime, min_interval: timedelta) -> None:
+        """Record use, at most once per ``min_interval`` (avoids a write per request)."""
+        conn.execute(
+            update(api_key)
+            .where(
+                api_key.c.key_id == key_id,
+                or_(api_key.c.last_used_at.is_(None), api_key.c.last_used_at < now - min_interval),
+            )
+            .values(last_used_at=now)
+        )

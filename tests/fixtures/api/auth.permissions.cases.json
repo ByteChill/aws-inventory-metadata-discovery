@@ -1,0 +1,17 @@
+[
+  {"method": "GET", "path": "/v1/resources", "allowed": ["viewer", "operator", "admin"]},
+  {"method": "GET", "path": "/v1/resources/stats", "allowed": ["viewer", "operator", "admin"]},
+  {"method": "GET", "path": "/v1/resource-types", "allowed": ["viewer", "operator", "admin"]},
+  {"method": "GET", "path": "/v1/accounts/123456789012/coverage", "allowed": ["viewer", "operator", "admin"]},
+  {"method": "GET", "path": "/v1/scans", "allowed": ["viewer", "operator", "admin"]},
+  {"method": "POST", "path": "/v1/scans", "body": {"scope": {"account_id": "123456789012", "region": "sa-east-1"}}, "allowed": ["operator", "admin"], "allowed_status": 422},
+  {"method": "POST", "path": "/v1/resources/refresh", "body": {"arns": ["arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0123456789abcdef0"], "wait_seconds": 0}, "allowed": ["operator", "admin"], "allowed_status": 202},
+  {"method": "GET", "path": "/v1/api-keys", "allowed": ["admin"]},
+  {"method": "GET", "path": "/v1/scans/01NOPE", "allowed": ["viewer", "operator", "admin"], "allowed_status": 404},
+  {"method": "GET", "path": "/v1/resources/by-arn?arn=arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0123456789abcdef0", "allowed": ["viewer", "operator", "admin"], "allowed_status": 404},
+  {"method": "POST", "path": "/v1/resources/search", "body": {}, "allowed": ["viewer", "operator", "admin"]},
+  {"method": "POST", "path": "/v1/api-keys", "body": {"name": "x"}, "allowed": ["admin"], "allowed_status": 422},
+  {"method": "DELETE", "path": "/v1/api-keys/01NOPE", "allowed": ["admin"], "allowed_status": 404},
+  {"method": "GET", "path": "/v1/history/changes", "allowed": ["viewer", "operator", "admin"], "allowed_status": 501},
+  {"method": "GET", "path": "/v1/me", "allowed": ["viewer", "operator", "admin"]}
+]

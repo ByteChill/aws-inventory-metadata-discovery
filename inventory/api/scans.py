@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import ValidationError
 from sqlalchemy.engine import RowMapping
 
+from inventory.api.auth import Principal, require
 from inventory.api.errors import ValidationFailedError
 from inventory.api.refresh import ArnResult
 from inventory.api.resources import to_resource
@@ -42,6 +43,8 @@ from inventory.observability import get_context
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["scans"])
 State = Annotated[ApiState, Depends(get_state)]
+Writer = Annotated[Principal, Depends(require("scans:write"))]
+Reader = Depends(require("scans:read"))
 jobs = JobRepository()
 
 
@@ -75,12 +78,16 @@ async def wait_for_job(state: ApiState, job_id: str, wait_seconds: float) -> Row
 
 
 @router.post("/scans", response_model=ScanJobOut, responses={202: {"model": ScanJobOut}})
-async def create_scan(state: State, body: ScanRequest, response: Response) -> ScanJobOut:
+async def create_scan(
+    state: State, body: ScanRequest, response: Response, principal: Writer
+) -> ScanJobOut:
     scope_in = body.scope
     if scope_in.arn:
         if any((scope_in.account_id, scope_in.region, scope_in.resource_type)):
             raise ValidationFailedError("arn cannot be combined with other scope fields")
-        job, _, done, deduplicated = await state.refresh.refresh([scope_in.arn], body.wait_seconds)
+        job, _, done, deduplicated = await state.refresh.refresh(
+            [scope_in.arn], body.wait_seconds, requested_by=principal.subject
+        )
         response.status_code = 200 if done else 202
         return await job_out(state, job, deduplicated=deduplicated)
     try:
@@ -115,6 +122,7 @@ async def create_scan(state: State, body: ScanRequest, response: Response) -> Sc
                 trigger="api",
                 scope=scope,
                 request_id=get_context().get("request_id"),
+                requested_by=principal.subject,
                 deadline_at=now + timedelta(minutes=state.settings.scan_job_deadline_minutes),
                 now=now,
             )
@@ -139,7 +147,7 @@ async def create_scan(state: State, body: ScanRequest, response: Response) -> Sc
     return await job_out(state, final, deduplicated=not created)
 
 
-@router.get("/scans/{job_id}", response_model=ScanJobOut)
+@router.get("/scans/{job_id}", response_model=ScanJobOut, dependencies=[Reader])
 async def get_scan(state: State, job_id: str, include_tasks: bool = False) -> ScanJobOut:
     row = await state.queries.job(job_id)
     if row is None:
@@ -147,7 +155,7 @@ async def get_scan(state: State, job_id: str, include_tasks: bool = False) -> Sc
     return await job_out(state, row, include_tasks=include_tasks)
 
 
-@router.get("/scans", response_model=Page[ScanJobOut])
+@router.get("/scans", response_model=Page[ScanJobOut], dependencies=[Reader])
 async def list_scans(
     state: State,
     status: Annotated[list[JobStatus] | None, Query()] = None,
@@ -171,11 +179,13 @@ async def list_scans(
     responses={202: {"model": RefreshResponse}},
 )
 async def refresh_resources(
-    state: State, body: RefreshRequest, response: Response
+    state: State, body: RefreshRequest, response: Response, principal: Writer
 ) -> RefreshResponse:
     if len(body.arns) > state.settings.refresh_max_arns:
         raise ValidationFailedError(f"at most {state.settings.refresh_max_arns} ARNs per request")
-    job, results, done, deduplicated = await state.refresh.refresh(body.arns, body.wait_seconds)
+    job, results, done, deduplicated = await state.refresh.refresh(
+        body.arns, body.wait_seconds, requested_by=principal.subject
+    )
     response.status_code = 200 if done else 202
     return RefreshResponse(
         job=await job_out(state, job, deduplicated=deduplicated),
@@ -199,6 +209,8 @@ async def _result(state: ApiState, result: ArnResult) -> RefreshResult:
     return RefreshResult(arn=result.arn, status=result.status, resource=resource, error=error)
 
 
-@router.api_route("/history/{path:path}", methods=["GET", "POST"], include_in_schema=False)
+@router.api_route(
+    "/history/{path:path}", methods=["GET", "POST"], include_in_schema=False, dependencies=[Reader]
+)
 async def history(path: str) -> dict[str, Any]:
     raise NotImplementedFeatureError("change history is not implemented yet (spec 09)")

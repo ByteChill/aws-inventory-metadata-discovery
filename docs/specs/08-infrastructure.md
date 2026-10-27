@@ -165,7 +165,7 @@ Logs Insights 保存的查询（`aws_cloudwatch_query_definition`）：
 |---|---|---|---|
 | broker | Lambda（容器镜像） | `aws-inventory-discover/broker` | `public.ecr.aws/lambda/python:3.12` |
 | planner | Lambda（容器镜像） | `aws-inventory-discover/planner` | 同上 |
-| api | ECS Fargate | `aws-inventory-discover/api` | `python:3.12-slim` |
+| api | ECS Fargate | `aws-inventory-discover/api` | `python:3.12-slim`；包含 `web/` 构建出的 UI（node 构建阶段，spec 10） |
 | worker | ECS Fargate（每个扫描 region） | `aws-inventory-discover/worker` | `python:3.12-slim` |
 
 - 架构：全部 **x86_64**（Lambda `x86_64`，Fargate `X86_64`），构建只需要一个平台。

@@ -49,6 +49,20 @@ class NotFoundError(InventoryError):
     http_status = 404
 
 
+class UnauthenticatedError(InventoryError):
+    """No or invalid credentials (API)."""
+
+    default_code = "UNAUTHENTICATED"
+    http_status = 401
+
+
+class ForbiddenError(InventoryError):
+    """Authenticated, but the principal lacks the permission (API)."""
+
+    default_code = "FORBIDDEN"
+    http_status = 403
+
+
 class AccessDeniedError(InventoryError):
     default_code = "ACCOUNT_ACCESS_DENIED"
     http_status = 403

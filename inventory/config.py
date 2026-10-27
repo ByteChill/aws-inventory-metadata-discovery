@@ -151,6 +151,28 @@ class ApiSettings(BaseSettings):
     tracing_enabled: bool = False
     otlp_endpoint: str = "http://localhost:4317"
     ui_enabled: bool = True
+    ui_dir: str | None = None  # built web UI; defaults to inventory/api/ui (filled in the image)
+    # authentication (spec 10): "disabled" = anonymous with every role (local, migration period)
+    auth_mode: Literal["disabled", "enforced"] = "disabled"
+    jwt_jwks_url: str | None = None
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
+    jwt_algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    jwt_username_claim: str = "preferred_username"
+    jwt_roles_claim: str = "roles"
+    jwt_default_role: Literal["viewer", "operator", "admin"] = "viewer"
+
+    @model_validator(mode="after")
+    def _validate(self) -> ApiSettings:
+        if self.auth_mode == "enforced":
+            missing = [
+                name
+                for name in ("jwt_jwks_url", "jwt_issuer", "jwt_audience")
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(f"auth_mode=enforced requires {', '.join(missing)}")
+        return self
 
 
 @functools.cache

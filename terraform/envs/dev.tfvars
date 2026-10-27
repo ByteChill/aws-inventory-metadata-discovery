@@ -10,9 +10,9 @@ db_instance_class               = "db.t4g.medium"
 # is an image tag in ECR aws-inventory-discover/<component> (deploy/versions.json).
 component_versions = {
   broker  = "1.0.0"
-  planner = "1.0.0"
-  api     = "1.0.0"
-  worker  = "1.0.0"
+  planner = "1.1.0"
+  api     = "1.1.0"
+  worker  = "1.1.0"
 }
 
 # Scan regions and their existing network (owned by the network team).

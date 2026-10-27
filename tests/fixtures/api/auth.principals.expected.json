@@ -1,0 +1,47 @@
+{
+  "viewer": {
+    "subject": "10000001",
+    "kind": "user",
+    "roles": [
+      "viewer"
+    ]
+  },
+  "operator": {
+    "subject": "10000002",
+    "kind": "user",
+    "roles": [
+      "operator"
+    ]
+  },
+  "admin": {
+    "subject": "10000003",
+    "kind": "user",
+    "roles": [
+      "admin"
+    ]
+  },
+  "no_roles": {
+    "subject": "10000004",
+    "kind": "user",
+    "roles": [
+      "viewer"
+    ]
+  },
+  "expired": "UNAUTHENTICATED",
+  "wrong_issuer": "UNAUTHENTICATED",
+  "wrong_audience": "UNAUTHENTICATED",
+  "wrong_key": "UNAUTHENTICATED",
+  "username_not_8_digits": "UNAUTHENTICATED",
+  "username_7_digits": "UNAUTHENTICATED",
+  "no_exp": "UNAUTHENTICATED",
+  "alg_hs256": "UNAUTHENTICATED",
+  "roles_not_a_list": {
+    "subject": "10000005",
+    "kind": "user",
+    "roles": [
+      "viewer"
+    ]
+  },
+  "username_trailing_newline": "UNAUTHENTICATED",
+  "username_non_ascii_digits": "UNAUTHENTICATED"
+}

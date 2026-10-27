@@ -31,6 +31,7 @@ CONTEXT_FIELDS = (
     "region",
     "resource_type",
     "arn",
+    "principal",
 )
 METRIC_NAMESPACE = "Inventory"
 SENSITIVE_KEYS = frozenset(

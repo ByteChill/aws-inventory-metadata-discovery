@@ -88,13 +88,15 @@ class RefreshService:
 
     # ------------------------------------------------------------------ run
     async def refresh(
-        self, arns: list[str], wait_seconds: float
+        self, arns: list[str], wait_seconds: float, *, requested_by: str | None = None
     ) -> tuple[ScanJob, list[ArnResult], bool, bool]:
         """Returns (job, per-ARN results, all done, deduplicated)."""
         resolved = [await run_sync(self.resolve, arn, limiter=self._db_limiter) for arn in arns]
         refreshable = [r for r in resolved if r.key is not None]
         scope = ScanScope(arn=arns[0]) if len(arns) == 1 else ScanScope(arns=sorted(arns))
-        job, created = await run_sync(self._create_job, scope, limiter=self._db_limiter)
+        job, created = await run_sync(
+            self._create_job, scope, requested_by, limiter=self._db_limiter
+        )
         if created:
             new_tasks = [
                 NewTask(
@@ -132,7 +134,7 @@ class RefreshService:
             await anyio.sleep(min(interval, remaining))
 
     # ------------------------------------------------------------------ sync helpers
-    def _create_job(self, scope: ScanScope) -> tuple[ScanJob, bool]:
+    def _create_job(self, scope: ScanScope, requested_by: str | None) -> tuple[ScanJob, bool]:
         now = utcnow()
         with self.rt.db.begin() as conn:
             return self.jobs.create_job(
@@ -140,6 +142,7 @@ class RefreshService:
                 trigger="api",
                 scope=scope,
                 request_id=get_context().get("request_id"),
+                requested_by=requested_by,
                 deadline_at=now + timedelta(minutes=self.settings.refresh_job_deadline_minutes),
                 now=now,
             )

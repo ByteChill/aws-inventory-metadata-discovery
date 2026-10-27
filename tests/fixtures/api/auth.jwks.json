@@ -1,0 +1,15 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "key_ops": [
+        "verify"
+      ],
+      "n": "5WyF1y5UORvARGbaFpU23e5IxrzHRVIIQ4XshJVzS-yM8KXLManpqvQek8vYLP7DKWgTTho63dBnadXY8j-EM3diovuM-rF3H5s0aIxrlQMjEt-TsZDnzL59cIudCY9mRXKWssGjFrZUG74UGrxlXB6obJuEGSmHjZVUb1gooJ-q4S8dp1RhGUepFDS-5ydKzt2UST6w4Jj8AZW_yJNIkv4PpYdvV54fTI31AjDXoWBbTqq2gD8bx7oe-5hwhvVDUJmG_sZX2dLD01OPrTk5wGlRBn2EbQUGLq_0gkROKYTNQpgNTluH0a2onfIJDU2lDi5NXoVyzHCeeHyCHZj8gw",
+      "e": "AQAB",
+      "kid": "test-sso-1",
+      "use": "sig",
+      "alg": "RS256"
+    }
+  ]
+}

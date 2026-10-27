@@ -15,7 +15,8 @@
 |---|---|
 | 语言 | Python 3.12 |
 | 包管理 | uv，单个 `pyproject.toml`，单个包 `inventory`（平铺布局，**不要** `src/` 或 `a/src/a` 结构） |
-| API | FastAPI + pydantic v2 |
+| API | FastAPI + pydantic v2；认证 PyJWT（SSO 的 JWT）+ API key |
+| Web UI | React 18 + baseui 18 + Vite + TypeScript，npm（`web/package-lock.json`） |
 | 配置 | pydantic-settings（只在 `inventory/config.py` 中） |
 | Lambda | AWS Lambda Powertools（Logger / Tracer / Metrics / Parameters） |
 | 数据库 | Aurora PostgreSQL 16；SQLAlchemy **Core**（不用 ORM）+ psycopg 3；Alembic 手写迁移 |
@@ -60,9 +61,10 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 | `inventory/transport.py` | `Dispatcher` / `CredentialProvider` / `ResultSink` / `ChangeSink` / `RefreshExecutor` 接口与方案 A 实现 |
 | `inventory/collectors/<service>.py` | 每个 AWS 服务一个文件 |
 | `inventory/broker/` | broker v2 内部模块 |
-| `inventory/api/` | FastAPI 应用：`app.py`（工厂）、`middleware.py`、`errors.py`、`schemas.py`、`queries.py`（异步查询）、`refresh.py`、`state.py`、`resources.py`、`scans.py`；`ui/` 为内置静态页面（原生 JS，只调用 `/v1`，数据一律用 `textContent` 渲染） |
+| `inventory/api/` | FastAPI 应用：`app.py`（工厂）、`middleware.py`、`errors.py`、`schemas.py`、`queries.py`（异步查询）、`refresh.py`、`state.py`、`resources.py`、`scans.py`、`auth.py`（认证与 RBAC）、`keys.py`（`/v1/me`、API key）；`ui/` 为构建好的 web UI（镜像中由 `web/` 构建，不进 git） |
 | `inventory/handlers/` | 部署入口，只做组装与参数转换，**不写业务逻辑** |
 | `deploy/` | 镜像构建（每个组件一个 target）、组件版本 `versions.json`、离线 DDL |
+| `web/` | Web UI：React 18 + baseui + Vite + TypeScript（spec 10）；只调用 `/v1`，不用 `dangerouslySetInnerHTML` |
 
 单个模块超过约 800 行时再拆分，拆分前先在对应 spec 中更新文件清单。
 
@@ -127,6 +129,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - 所有路由在 `/v1` 下；请求与响应模型在 `api/schemas.py`，与 `docs/api.md` 一一对应。
 - 接口有任何变化：同时更新 `docs/api.md` 与 OpenAPI 快照 `tests/fixtures/api/openapi.json`。
 - 分页只用 keyset cursor，不提供 offset。
+- 每个 `/v1` 路由都声明需要的权限（`Depends(require("..."))`，spec 10）；新增路由时同步更新 spec 10 §1 的权限表与 `tests/fixtures/api/auth.permission_cases.json`。
 - 错误统一为 `{"error": {"code", "message", "request_id", "details"}}`，code 取自 `errors.py`。
 
 ## Git
