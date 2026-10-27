@@ -1,0 +1,32 @@
+{
+  "accounts": [
+    {
+      "account_id": "100000000001",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000002",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000003",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000004",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000005",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000006",
+      "status": "ACTIVE"
+    },
+    {
+      "account_id": "100000000007",
+      "status": "SUSPENDED"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "AWS::EC2::VPC": {
+    "status": "succeeded",
+    "created": 1,
+    "updated": 0,
+    "deleted": 0,
+    "unchanged": 3,
+    "duration_ms": 10
+  },
+  "AWS::EC2::Instance": {
+    "status": "failed",
+    "error_code": "THROTTLED",
+    "error_message": "Rate exceeded",
+    "retryable": true
+  }
+}
