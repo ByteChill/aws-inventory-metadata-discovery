@@ -1,0 +1,52 @@
+[
+  {
+    "name": "missing row",
+    "row": null,
+    "expected": "not_found"
+  },
+  {
+    "name": "deleted during the task",
+    "row": {
+      "deleted_at": "2026-10-27T08:00:05+00:00",
+      "first_seen_at": "2026-10-01T00:00:00+00:00",
+      "last_changed_at": "2026-10-27T08:00:05+00:00"
+    },
+    "expected": "deleted"
+  },
+  {
+    "name": "deleted before the task",
+    "row": {
+      "deleted_at": "2026-10-20T00:00:00+00:00",
+      "first_seen_at": "2026-10-01T00:00:00+00:00",
+      "last_changed_at": "2026-10-20T00:00:00+00:00"
+    },
+    "expected": "not_found"
+  },
+  {
+    "name": "first seen by the task",
+    "row": {
+      "deleted_at": null,
+      "first_seen_at": "2026-10-27T08:00:03+00:00",
+      "last_changed_at": "2026-10-27T08:00:03+00:00"
+    },
+    "expected": "created"
+  },
+  {
+    "name": "changed by the task",
+    "row": {
+      "deleted_at": null,
+      "first_seen_at": "2026-10-01T00:00:00+00:00",
+      "last_changed_at": "2026-10-27T08:00:03+00:00"
+    },
+    "expected": "updated"
+  },
+  {
+    "name": "untouched",
+    "row": {
+      "deleted_at": null,
+      "first_seen_at": "2026-10-01T00:00:00+00:00",
+      "last_changed_at": "2026-10-20T00:00:00+00:00"
+    },
+    "expected": "unchanged"
+  }
+]

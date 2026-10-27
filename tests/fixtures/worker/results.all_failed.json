@@ -1,0 +1,8 @@
+{
+  "AWS::EC2::VPC": {
+    "status": "failed",
+    "error_code": "API_ACCESS_DENIED",
+    "error_message": "denied",
+    "retryable": false
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "AWS::EC2::VPC": {
+    "status": "auth_denied",
+    "error_code": "ACCOUNT_ACCESS_DENIED",
+    "error_message": "no ReadOnly role",
+    "retryable": false
+  }
+}

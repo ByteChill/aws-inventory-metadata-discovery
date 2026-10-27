@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <form method="post" id="loginForm" action="/adfs/ls/IdpInitiatedSignOn.aspx?loginToRp=urn:amazon:webservices">
+    <input id="userNameInput" name="UserName" type="email" value="svc-inventory@corp.example" />
+    <input id="passwordInput" name="Password" type="password" />
+    <input id="optionForms" type="hidden" name="AuthMethod" value="FormsAuthentication" />
+  </form>
+  <div id="error" class="fieldMargin error smallText">
+    <span id="errorText" for="">Incorrect user ID or password. Type the correct user ID and password, and try again.</span>
+  </div>
+</body>
+</html>

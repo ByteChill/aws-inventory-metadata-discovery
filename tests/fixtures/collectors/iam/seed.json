@@ -1,0 +1,81 @@
+{
+  "policies": [
+    {
+      "name": "read-logs",
+      "path": "/team/",
+      "document": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "logs:Get*",
+            "Resource": "*"
+          }
+        ]
+      },
+      "tags": {
+        "Owner": "team-a"
+      }
+    }
+  ],
+  "roles": [
+    {
+      "name": "app-role",
+      "path": "/service/",
+      "tags": {
+        "App": "web"
+      },
+      "attach": [
+        "read-logs"
+      ],
+      "inline": {
+        "s3-read": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": "s3:GetObject",
+              "Resource": "*"
+            }
+          ]
+        }
+      },
+      "instance_profile": "app-profile"
+    }
+  ],
+  "users": [
+    {
+      "name": "deployer",
+      "path": "/",
+      "tags": {
+        "Team": "ops"
+      },
+      "attach": [
+        "read-logs"
+      ],
+      "groups": [
+        "ops"
+      ]
+    }
+  ],
+  "groups": [
+    "ops"
+  ],
+  "assume_role_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "ec2.amazonaws.com"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "missing_ids": {
+    "AWS::IAM::Role": "no-such-role",
+    "AWS::IAM::User": "no-such-user",
+    "AWS::IAM::ManagedPolicy": "no-such-policy"
+  }
+}

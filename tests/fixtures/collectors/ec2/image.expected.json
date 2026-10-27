@@ -1,0 +1,11 @@
+[
+  {
+    "name": "web-ami",
+    "relation_keys": [
+      "snapshot_ids"
+    ],
+    "tags": {
+      "Name": "web-ami"
+    }
+  }
+]

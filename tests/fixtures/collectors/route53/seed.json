@@ -1,0 +1,20 @@
+{
+  "zones": [
+    {
+      "name": "example.com",
+      "private": false,
+      "tags": {
+        "Env": "prod"
+      }
+    },
+    {
+      "name": "internal.example.com",
+      "private": true,
+      "vpc_region": "us-east-1",
+      "tags": {}
+    }
+  ],
+  "missing_ids": {
+    "AWS::Route53::HostedZone": "Z0000000000000000000"
+  }
+}

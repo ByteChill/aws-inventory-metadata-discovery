@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>Sign In</title></head>
+<body>
+  <form method="post" id="loginForm" autocomplete="off" action="/adfs/ls/IdpInitiatedSignOn.aspx?loginToRp=urn:amazon:webservices&amp;client-request-id=00000000-0000-0000-0000-000000000001">
+    <input id="userNameInput" name="UserName" type="email" value="" />
+    <input id="passwordInput" name="Password" type="password" />
+    <input id="kmsiInput" type="checkbox" name="Kmsi" value="true" />
+    <input id="optionForms" type="hidden" name="AuthMethod" value="FormsAuthentication" />
+    <span id="submitButton">Sign in</span>
+  </form>
+</body>
+</html>

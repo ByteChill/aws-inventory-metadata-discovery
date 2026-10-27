@@ -1,0 +1,9 @@
+[
+  {"code": "Throttling", "status": 400, "expect": "THROTTLED", "retryable": true},
+  {"code": "RequestLimitExceeded", "status": 503, "expect": "THROTTLED", "retryable": true},
+  {"code": "UnauthorizedOperation", "status": 403, "expect": "API_ACCESS_DENIED", "retryable": false},
+  {"code": "AccessDeniedException", "status": 400, "expect": "API_ACCESS_DENIED", "retryable": false},
+  {"code": "OptInRequired", "status": 401, "expect": "REGION_NOT_ENABLED", "retryable": false},
+  {"code": "InternalError", "status": 500, "expect": "AWS_SERVER_ERROR", "retryable": true},
+  {"code": "InvalidParameterValue", "status": 400, "expect": "AWS_InvalidParameterValue", "retryable": false}
+]

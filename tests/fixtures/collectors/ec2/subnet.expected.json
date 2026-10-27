@@ -1,0 +1,32 @@
+[
+  {
+    "name": null,
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {}
+  },
+  {
+    "name": null,
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {}
+  },
+  {
+    "name": null,
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {}
+  },
+  {
+    "name": "private-a",
+    "relation_keys": [
+      "vpc_id"
+    ],
+    "tags": {
+      "Name": "private-a"
+    }
+  }
+]

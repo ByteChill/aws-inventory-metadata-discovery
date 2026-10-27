@@ -1,0 +1,10 @@
+[
+  {"statuses": ["succeeded", "succeeded"], "expected": "succeeded"},
+  {"statuses": ["succeeded", "auth_denied"], "expected": "succeeded"},
+  {"statuses": ["auth_denied"], "expected": "succeeded"},
+  {"statuses": ["failed", "failed", "auth_denied"], "expected": "failed"},
+  {"statuses": ["succeeded", "failed"], "expected": "partial"},
+  {"statuses": ["succeeded", "partial"], "expected": "partial"},
+  {"statuses": ["succeeded", "timed_out"], "expected": "partial"},
+  {"statuses": ["succeeded", "running"], "expected": "running"}
+]

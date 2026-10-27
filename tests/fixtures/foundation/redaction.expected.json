@@ -1,0 +1,8 @@
+{
+  "msg": {"event": "assume", "Credentials": "***"},
+  "extra": {
+    "payload": {"items": [{"session_token": "***", "name": "ok"}, {"Password": "***"}]},
+    "SAMLResponse": "***",
+    "account_id": "123456789012"
+  }
+}

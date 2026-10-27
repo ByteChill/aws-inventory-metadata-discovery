@@ -1,0 +1,6 @@
+{
+  "scope": {
+    "account_id": "123456789012",
+    "resource_type": "AWS::EC2::VPC"
+  }
+}

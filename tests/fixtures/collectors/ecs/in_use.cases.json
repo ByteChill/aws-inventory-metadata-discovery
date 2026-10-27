@@ -1,0 +1,16 @@
+[
+  {"name": "rolling deployment runs old and new",
+   "service": {"deploymentController": {"type": "ECS"}, "taskDefinition": "arn:td/web:3",
+               "deployments": [{"status": "PRIMARY", "taskDefinition": "arn:td/web:3"}, {"status": "ACTIVE", "taskDefinition": "arn:td/web:2"}]},
+   "expected": ["arn:td/web:2", "arn:td/web:3"]},
+  {"name": "inactive deployment is ignored",
+   "service": {"deployments": [{"status": "PRIMARY", "taskDefinition": "arn:td/web:3"}, {"status": "INACTIVE", "taskDefinition": "arn:td/web:2"}]},
+   "expected": ["arn:td/web:3"]},
+  {"name": "code deploy uses task sets",
+   "service": {"deploymentController": {"type": "CODE_DEPLOY"}, "taskDefinition": "arn:td/api:1",
+               "taskSets": [{"status": "PRIMARY", "taskDefinition": "arn:td/api:7"}, {"status": "ACTIVE", "taskDefinition": "arn:td/api:6"}]},
+   "expected": ["arn:td/api:6", "arn:td/api:7"]},
+  {"name": "fallback to the service task definition",
+   "service": {"deploymentController": {"type": "EXTERNAL"}, "taskDefinition": "arn:td/batch:4", "taskSets": []},
+   "expected": ["arn:td/batch:4"]}
+]

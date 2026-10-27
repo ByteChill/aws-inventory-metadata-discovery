@@ -1,0 +1,14 @@
+[
+  {
+    "name": "dev",
+    "relation_keys": [],
+    "tags": {}
+  },
+  {
+    "name": "prod",
+    "relation_keys": [],
+    "tags": {
+      "Env": "prod"
+    }
+  }
+]

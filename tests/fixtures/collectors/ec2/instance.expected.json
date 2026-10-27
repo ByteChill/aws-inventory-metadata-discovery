@@ -1,0 +1,15 @@
+[
+  {
+    "name": "web-01",
+    "relation_keys": [
+      "image_id",
+      "security_group_ids",
+      "subnet_id",
+      "vpc_id"
+    ],
+    "tags": {
+      "Name": "web-01",
+      "Role": "web"
+    }
+  }
+]

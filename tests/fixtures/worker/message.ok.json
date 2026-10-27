@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "job_id": "__JOB_ID__",
+  "task_id": "__TASK_ID__",
+  "request_id": "req-worker-1",
+  "trigger": "api",
+  "account_id": "123456789012",
+  "region": "eu-west-1",
+  "resource_types": null,
+  "resource_ids": null,
+  "full_refresh": false,
+  "attempt": 1
+}

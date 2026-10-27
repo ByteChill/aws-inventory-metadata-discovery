@@ -1,0 +1,7 @@
+[
+  {"aws_code": "ExpiredTokenException", "expect": "saml_expired"},
+  {"aws_code": "InvalidIdentityToken", "expect": "saml_expired"},
+  {"aws_code": "AccessDenied", "expect": "ACCESS_DENIED"},
+  {"aws_code": "Throttling", "expect": "THROTTLED"},
+  {"aws_code": "RegionDisabledException", "expect": "INTERNAL"}
+]

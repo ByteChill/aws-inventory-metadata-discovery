@@ -1,0 +1,8 @@
+{
+  "BROKER_ADFS_IDP_URL": "https://adfs.example.invalid/adfs/ls/IdpInitiatedSignOn.aspx?loginToRp=urn:amazon:webservices",
+  "BROKER_ADFS_CREDENTIALS_SECRET_ARN": "inventory/test/adfs",
+  "BROKER_REDIS_URL": "redis://localhost:6379/15",
+  "BROKER_KMS_KEY_ID": "alias/inventory-test",
+  "BROKER_LOCK_POLL_INTERVAL_MS": "5",
+  "BROKER_LOCK_WAIT_TIMEOUT_MS": "3000"
+}

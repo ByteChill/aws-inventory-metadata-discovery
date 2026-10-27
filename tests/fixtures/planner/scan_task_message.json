@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "job_id": "01JBX7AAAAAAAAAAAAAAAAAAAA",
+  "task_id": "01JBX7BBBBBBBBBBBBBBBBBBBB",
+  "request_id": "01JBX6Y7Z8A9B0C1D2E3F4G5H6",
+  "trigger": "api",
+  "account_id": "123456789012",
+  "region": "eu-west-1",
+  "resource_types": null,
+  "resource_ids": null,
+  "full_refresh": false,
+  "attempt": 1
+}

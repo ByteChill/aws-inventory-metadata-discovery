@@ -1,0 +1,9 @@
+[
+  {
+    "name": "read-logs",
+    "relation_keys": [],
+    "tags": {
+      "Owner": "team-a"
+    }
+  }
+]

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "deployer",
+    "relation_keys": [
+      "attached_policy_arns",
+      "group_names"
+    ],
+    "tags": {
+      "Team": "ops"
+    }
+  }
+]

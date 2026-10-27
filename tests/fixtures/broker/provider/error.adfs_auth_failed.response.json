@@ -1,0 +1,6 @@
+{
+  "status": "error",
+  "code": "ADFS_AUTH_FAILED",
+  "message": "Incorrect user ID or password.",
+  "retryable": false
+}
