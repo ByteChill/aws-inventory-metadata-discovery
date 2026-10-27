@@ -21,7 +21,7 @@ from inventory.broker.cache import RedisCache
 from inventory.broker.crypto import EnvelopeCipher
 from inventory.broker.service import BrokerService
 from inventory.broker.sts import StsAssumer
-from inventory.config import get_broker_settings, get_common_settings
+from inventory.config import US_EAST_1, get_broker_settings, get_common_settings
 from inventory.models import (
     BROKER_REQUEST_ADAPTER,
     BrokerErrorResponse,
@@ -46,8 +46,9 @@ def get_service() -> BrokerService:
     install_filters(logging.getLogger(SERVICE_NAME))  # the Powertools logger
 
     clients = ClientFactory(EndpointResolver(common))
-    # secrets and the KMS key live in the home region; STS may be another region (opt-in issue)
-    secrets = SecretsProvider(boto3_client=clients.client("secretsmanager", common.home_region))
+    # secrets and the KMS key live in the primary region; STS is called in us-east-1, which
+    # every account has enabled (the primary region is opt-in)
+    secrets = SecretsProvider(boto3_client=clients.client("secretsmanager", common.primary_region))
 
     def adfs_credentials() -> tuple[str, SecretStr]:
         # Read through the provider's TTL cache on every login so rotations are picked up.
@@ -62,7 +63,7 @@ def get_service() -> BrokerService:
         else None
     )
     cipher = EnvelopeCipher(
-        clients.client("kms", common.home_region),
+        clients.client("kms", common.primary_region),
         settings.kms_key_id,
         settings.data_key_ttl_seconds,
     )
@@ -85,7 +86,7 @@ def get_service() -> BrokerService:
         settings.adfs_timeout_seconds,
         settings.adfs_ca_bundle,
     )
-    sts = StsAssumer(clients.client("sts", settings.sts_region), settings.session_duration_seconds)
+    sts = StsAssumer(clients.client("sts", US_EAST_1), settings.session_duration_seconds)
     return BrokerService(settings, cache, adfs, sts)
 
 

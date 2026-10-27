@@ -317,7 +317,7 @@ def get_planner() -> Planner:
     runtime = build_runtime(SERVICE_NAME, statement_timeout_ms=60_000)
     settings = get_planner_settings()
     directory = AccountDirectoryClient(
-        runtime.clients, settings.account_directory_function_name, runtime.common.home_region
+        runtime.clients, settings.account_directory_function_name, runtime.common.primary_region
     )
     return Planner(runtime, settings, directory)
 

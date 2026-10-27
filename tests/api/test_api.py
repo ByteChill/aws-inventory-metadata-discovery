@@ -13,9 +13,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from inventory.api.app import create_app
+from inventory.bootstrap import Runtime
 from inventory.db import AccountRegionRepository, JobRepository, scan_task
 from inventory.observability import ContextFilter
-from tests.api.conftest import app_settings, new_async_engine, without_request_id
+from tests.api.conftest import app_settings, new_async_engine, running_worker, without_request_id
 from tests.helpers import assert_matches_fixture, load_fixture
 from tests.planner.conftest import drain, make_runtime
 
@@ -250,7 +251,7 @@ def test_scan_is_queued_and_deduplicated(client: TestClient) -> None:
     assert first.status_code == 202
     assert first.json()["request_id"] == "r-scan" and not first.json()["deduplicated"]
     assert second.json()["deduplicated"] and second.json()["job_id"] == first.json()["job_id"]
-    (message,) = drain("eu-west-1", "inventory-test-ondemand")
+    (message,) = drain("eu-west-1", "inventory-local-ondemand")
     assert message["MessageAttributes"]["request_id"]["StringValue"] == "r-scan"
     assert fetched["tasks"][0]["region"] == "eu-west-1"
     assert fetched["stats"]["tasks_total"] == 1
@@ -337,21 +338,24 @@ def test_unknown_job(client: TestClient) -> None:
 # --------------------------------------------------------------------------- refresh
 
 
-def test_refresh_inline_create_update_delete(client: TestClient, ec2_ids: dict[str, str]) -> None:
+def test_refresh_create_update_delete(
+    client: TestClient, runtime: Runtime, ec2_ids: dict[str, str]
+) -> None:
     import boto3
 
     arn = f"arn:aws:ec2:ap-east-1:123456789012:instance/{ec2_ids['web-01']}"
-    created = client.post("/v1/resources/refresh", json={"arns": [arn]})
     ec2 = boto3.client("ec2", region_name="ap-east-1")
-    ec2.create_tags(Resources=[ec2_ids["web-01"]], Tags=[{"Key": "Owner", "Value": "team-a"}])
-    updated = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    unchanged = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    ec2.terminate_instances(InstanceIds=[ec2_ids["web-01"]])
-    deleted = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    missing = client.post(
-        "/v1/resources/refresh",
-        json={"arns": ["arn:aws:ec2:ap-east-1:123456789012:instance/i-0123456789abcdef0"]},
-    )
+    with running_worker(runtime, "ap-east-1"):
+        created = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        ec2.create_tags(Resources=[ec2_ids["web-01"]], Tags=[{"Key": "Owner", "Value": "team-a"}])
+        updated = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        unchanged = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        ec2.terminate_instances(InstanceIds=[ec2_ids["web-01"]])
+        deleted = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        missing = client.post(
+            "/v1/resources/refresh",
+            json={"arns": ["arn:aws:ec2:ap-east-1:123456789012:instance/i-0123456789abcdef0"]},
+        )
 
     assert created.status_code == 200
     assert [
@@ -385,24 +389,24 @@ def test_refresh_unresolvable_arns(
     assert (result["error"] or {}).get("code") == code
 
 
-def test_refresh_without_reachable_endpoint_is_queued(client: TestClient) -> None:
+def test_refresh_is_queued_to_the_resource_region(client: TestClient) -> None:
     arn = "arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0123456789abcdef0"
 
     response = client.post("/v1/resources/refresh", json={"arns": [arn], "wait_seconds": 0.1})
 
     assert response.status_code == 202
     assert response.json()["results"][0]["status"] == "pending"
-    (message,) = drain("eu-west-1", "inventory-test-ondemand")
+    (message,) = drain("eu-west-1", "inventory-local-ondemand")
     assert json.loads(message["Body"])["resource_ids"] == ["vpc-0123456789abcdef0"]
 
 
-def test_many_arns_go_async(client: TestClient) -> None:
+def test_many_arns_are_queued(client: TestClient) -> None:
     arns = [f"arn:aws:ec2:ap-east-1:123456789012:vpc/vpc-{i:017x}" for i in range(21)]
 
-    response = client.post("/v1/resources/refresh", json={"arns": arns})
+    response = client.post("/v1/resources/refresh", json={"arns": arns, "wait_seconds": 0})
 
     assert response.status_code == 202
-    assert len(drain("ap-east-1", "inventory-test-ondemand")) == 21
+    assert len(drain("ap-east-1", "inventory-local-ondemand")) == 21
 
 
 # --------------------------------------------------------------------------- contract
@@ -442,8 +446,10 @@ def test_scope_validation_message(client: TestClient) -> None:
     assert body["details"][0]["loc"][:2] == ["body", "scope"]
 
 
-def test_scan_without_work_finishes_within_the_wait(client: TestClient, db: Any) -> None:
-    with db.begin() as conn:  # the account has none of the supported regions enabled
+def test_account_without_enabled_scan_regions_still_scans_global(
+    client: TestClient, db: Any
+) -> None:
+    with db.begin() as conn:  # the account has none of the scan regions enabled
         AccountRegionRepository().replace(
             conn,
             "123456789012",
@@ -452,12 +458,13 @@ def test_scan_without_work_finishes_within_the_wait(client: TestClient, db: Any)
             checked_at=datetime.now(UTC),
         )
 
-    response = client.post(
-        "/v1/scans", json={"scope": {"account_id": "123456789012"}, "wait_seconds": 2}
-    )
+    response = client.post("/v1/scans", json={"scope": {"account_id": "123456789012"}})
+    job = client.get(
+        f"/v1/scans/{response.json()['job_id']}", params={"include_tasks": "true"}
+    ).json()
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "succeeded"
+    assert response.status_code == 202
+    assert [t["region"] for t in job["tasks"]] == ["global"]
 
 
 @pytest.mark.usefixtures("seeded")
@@ -499,7 +506,7 @@ def test_refresh_errors_use_contract_codes(
     denied = make_runtime(db, FakeCredentials(denied=True))
     app = create_app(app_settings(), runtime=denied, async_engine=new_async_engine())
     arn = f"arn:aws:ec2:ap-east-1:123456789012:instance/{ec2_ids['web-01']}"
-    with TestClient(app) as client:
+    with TestClient(app) as client, running_worker(denied, "ap-east-1"):
         result = client.post("/v1/resources/refresh", json={"arns": [arn]}).json()["results"][0]
 
     assert (result["status"], result["error"]["code"]) == ("error", "ACCOUNT_ACCESS_DENIED")

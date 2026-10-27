@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any
 
@@ -12,10 +14,12 @@ from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from inventory.api.app import create_app
-from inventory.config import ApiSettings
-from inventory.engine import reconcile
+from inventory.bootstrap import Runtime
+from inventory.config import ApiSettings, WorkerSettings
+from inventory.engine import TaskExecutor, reconcile
+from inventory.handlers.worker import Worker
 from inventory.models import TypeResult, TypeScope, TypeStatus
-from inventory.transport import PostgresResultSink
+from inventory.transport import PostgresResultSink, QueueLocator
 from tests.collectors.conftest import seed_ec2
 from tests.conftest import FROZEN_NOW, TEST_DB_URL
 from tests.db.test_repository import rec
@@ -38,16 +42,52 @@ def seed_resources(db: Engine) -> None:
 
 
 def app_settings() -> ApiSettings:
-    return ApiSettings(wait_poll_interval_ms=20, refresh_inline_max=20)
+    return ApiSettings(wait_poll_interval_ms=20)
 
 
 def new_async_engine() -> Any:
     return create_async_engine(TEST_DB_URL)
 
 
+@contextmanager
+def running_worker(runtime: Runtime, region: str = "ap-east-1") -> Iterator[None]:
+    """A worker thread consuming the region's queues, as the ECS worker does (refreshes are
+    always queued)."""
+    executor = TaskExecutor(
+        runtime.engine, runtime.db, runtime.dispatcher, worker_id="test-worker", region=region
+    )
+    queues = QueueLocator(runtime.common, runtime.clients)
+    worker = Worker(
+        WorkerSettings(region=region, ondemand_wait_seconds=0, scheduled_wait_seconds=0),
+        runtime.clients.client("sqs", region),
+        executor.handle,
+        ondemand_url=queues.url(region, "ondemand"),
+        scheduled_url=queues.url(region, "scheduled"),
+    )
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            if not worker.poll_once():
+                stop.wait(0.02)
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
 @pytest.fixture
-def app(db: Engine, moto_env: None) -> Iterator[FastAPI]:
-    yield create_app(app_settings(), runtime=make_runtime(db), async_engine=new_async_engine())
+def runtime(db: Engine, moto_env: None) -> Runtime:
+    return make_runtime(db)
+
+
+@pytest.fixture
+def app(runtime: Runtime) -> Iterator[FastAPI]:
+    yield create_app(app_settings(), runtime=runtime, async_engine=new_async_engine())
 
 
 @pytest.fixture

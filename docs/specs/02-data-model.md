@@ -87,7 +87,7 @@ CREATE TABLE scope_state (
   account_id      char(12)    NOT NULL,
   region          text        NOT NULL,
   resource_type   text        NOT NULL,
-  status          text        NOT NULL,   -- succeeded | failed | auth_denied | skipped_no_endpoint
+  status          text        NOT NULL,   -- succeeded | failed | auth_denied（历史数据中可能有 skipped_no_endpoint）
   resource_count  integer,                -- 最近一次成功扫描时的数量
   last_attempt_at timestamptz NOT NULL,
   last_success_at timestamptz,
@@ -145,7 +145,7 @@ CREATE TABLE scan_task (
   region         text        NOT NULL,
   resource_types text[],                  -- NULL 表示该 region 所有可用类型
   resource_ids   text[],                  -- 仅批量刷新时使用，此时 resource_types 只有一个元素
-  queue          text        NOT NULL,    -- scheduled | ondemand | inline
+  queue          text        NOT NULL,    -- scheduled | ondemand（历史数据中可能有 inline）
   status         text        NOT NULL,    -- queued | running | retrying | succeeded | partial | failed | auth_denied | timed_out
   attempts       integer     NOT NULL DEFAULT 0,
   result         jsonb       NOT NULL DEFAULT '{}',   -- {resource_type: TypeResult}

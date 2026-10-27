@@ -12,7 +12,7 @@ const PAGE_SIZE = 50;
 const TASK_LIST_MAX = 200;
 const BADGE = {
   succeeded: 'ok', partial: 'warn', failed: 'bad', auth_denied: 'bad', timed_out: 'bad',
-  running: 'info', retrying: 'info', queued: 'muted', never: 'warn', skipped_no_endpoint: 'muted',
+  running: 'info', retrying: 'info', queued: 'muted', never: 'warn',
   created: 'ok', updated: 'ok', unchanged: 'muted', deleted: 'warn', not_found: 'warn',
   unsupported_type: 'bad', error: 'bad', pending: 'info',
 };
@@ -429,7 +429,7 @@ async function overviewPage(root) {
         h('td', null, t.service),
         h('td', null, t.is_global ? 'global' : 'regional'),
         h('td', null, t.depends_on.map(shortType).join(', ') || '—'),
-        h('td', null, t.enabled_regions.length ? t.enabled_regions.join(', ') : h('span', { class: 'error' }, 'no endpoint configured')))))));
+        h('td', null, t.enabled_regions.join(', ')))))));
 }
 
 // --------------------------------------------------------------------------- scans

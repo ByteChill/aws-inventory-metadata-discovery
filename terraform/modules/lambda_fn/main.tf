@@ -6,7 +6,10 @@ terraform {
 
 variable "name" { type = string }
 variable "image_uri" { type = string }
-variable "command" { type = list(string) }
+variable "architecture" {
+  type    = string
+  default = "x86_64"
+}
 variable "role_arn" { type = string }
 variable "environment" { type = map(string) }
 variable "timeout" {
@@ -44,14 +47,10 @@ resource "aws_lambda_function" "this" {
   package_type                   = "Image"
   image_uri                      = var.image_uri
   role                           = var.role_arn
-  architectures                  = ["arm64"]
+  architectures                  = [var.architecture]
   timeout                        = var.timeout
   memory_size                    = var.memory_size
   reserved_concurrent_executions = var.reserved_concurrency
-
-  image_config {
-    command = var.command
-  }
 
   environment {
     variables = var.environment

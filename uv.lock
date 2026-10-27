@@ -651,14 +651,16 @@ name = "inventory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "alembic" },
-    { name = "anyio" },
     { name = "aws-lambda-powertools", extra = ["tracer"] },
     { name = "boto3" },
-    { name = "cryptography" },
-    { name = "defusedxml" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+
+[package.optional-dependencies]
+api = [
+    { name = "anyio" },
     { name = "fastapi" },
-    { name = "httpx" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-instrumentation-botocore" },
     { name = "opentelemetry-instrumentation-fastapi" },
@@ -667,18 +669,33 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "opentelemetry-sdk-extension-aws" },
     { name = "psycopg", extra = ["binary", "pool"] },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
     { name = "python-ulid" },
-    { name = "redis" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
+]
+broker = [
+    { name = "cryptography" },
+    { name = "defusedxml" },
+    { name = "httpx" },
+    { name = "redis" },
+]
+planner = [
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "python-ulid" },
+    { name = "sqlalchemy" },
+]
+worker = [
+    { name = "alembic" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "python-ulid" },
+    { name = "sqlalchemy" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "boto3-stubs", extra = ["ecs", "essential", "iam", "kms", "route53", "secretsmanager", "stepfunctions", "sts"] },
     { name = "fakeredis", extra = ["lua"] },
+    { name = "inventory", extra = ["api", "broker", "planner", "worker"] },
     { name = "moto", extra = ["server"] },
     { name = "mypy" },
     { name = "pytest" },
@@ -691,34 +708,42 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.14" },
-    { name = "anyio", specifier = ">=4.6" },
+    { name = "alembic", marker = "extra == 'worker'", specifier = ">=1.14" },
+    { name = "anyio", marker = "extra == 'api'", specifier = ">=4.6" },
     { name = "aws-lambda-powertools", extras = ["tracer"], specifier = ">=3.3" },
     { name = "boto3", specifier = ">=1.35" },
-    { name = "cryptography", specifier = ">=43" },
-    { name = "defusedxml", specifier = ">=0.7" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28" },
-    { name = "opentelemetry-instrumentation-botocore", specifier = ">=0.49b0" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.49b0" },
-    { name = "opentelemetry-instrumentation-sqlalchemy", specifier = ">=0.49b0" },
-    { name = "opentelemetry-propagator-aws-xray", specifier = ">=1.0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.28" },
-    { name = "opentelemetry-sdk-extension-aws", specifier = ">=2.0" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "cryptography", marker = "extra == 'broker'", specifier = ">=43" },
+    { name = "defusedxml", marker = "extra == 'broker'", specifier = ">=0.7" },
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'broker'", specifier = ">=0.27" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'api'", specifier = ">=1.28" },
+    { name = "opentelemetry-instrumentation-botocore", marker = "extra == 'api'", specifier = ">=0.49b0" },
+    { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'api'", specifier = ">=0.49b0" },
+    { name = "opentelemetry-instrumentation-sqlalchemy", marker = "extra == 'api'", specifier = ">=0.49b0" },
+    { name = "opentelemetry-propagator-aws-xray", marker = "extra == 'api'", specifier = ">=1.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'api'", specifier = ">=1.28" },
+    { name = "opentelemetry-sdk-extension-aws", marker = "extra == 'api'", specifier = ">=2.0" },
+    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'api'", specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'planner'", specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'worker'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
-    { name = "python-ulid", specifier = ">=3.0" },
-    { name = "redis", specifier = ">=5.2" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "python-ulid", marker = "extra == 'api'", specifier = ">=3.0" },
+    { name = "python-ulid", marker = "extra == 'planner'", specifier = ">=3.0" },
+    { name = "python-ulid", marker = "extra == 'worker'", specifier = ">=3.0" },
+    { name = "redis", marker = "extra == 'broker'", specifier = ">=5.2" },
+    { name = "sqlalchemy", marker = "extra == 'planner'", specifier = ">=2.0.36" },
+    { name = "sqlalchemy", marker = "extra == 'worker'", specifier = ">=2.0.36" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'api'", specifier = ">=2.0.36" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'", specifier = ">=0.32" },
 ]
+provides-extras = ["broker", "planner", "worker", "api"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "boto3-stubs", extras = ["essential", "iam", "route53", "sts", "kms", "secretsmanager", "ecs", "stepfunctions"], specifier = ">=1.35" },
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.26" },
+    { name = "inventory", extras = ["api", "broker", "planner", "worker"] },
     { name = "moto", extras = ["server"], specifier = ">=5.0.20" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8.3" },

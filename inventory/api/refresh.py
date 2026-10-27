@@ -1,11 +1,8 @@
-"""Refresh by ARN: resolve, run inline where the endpoint is reachable, queue the rest."""
+"""Refresh by ARN: resolve each ARN and queue it to the worker of its region."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import socket
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -16,7 +13,6 @@ from anyio.to_thread import run_sync
 from inventory.bootstrap import Runtime
 from inventory.config import ApiSettings
 from inventory.db import JobRepository, ResourceRepository
-from inventory.engine import RefreshOutcome
 from inventory.models import (
     TERMINAL_TASK_STATUSES,
     NewTask,
@@ -24,22 +20,17 @@ from inventory.models import (
     ScanJob,
     ScanScope,
     ScanTask,
-    TypeResult,
-    TypeStatus,
     utcnow,
 )
-from inventory.observability import context_scope, get_context
+from inventory.observability import get_context
 
 log = logging.getLogger(__name__)
-API_WORKER_ID = f"api:{socket.gethostname()}:{os.getpid()}"
-_STATUS_COUNTERS = {"created": "created", "updated": "updated", "deleted": "deleted"}
 
 
 @dataclass
 class Resolved:
     arn: str
     key: ResourceKey | None = None
-    service_endpoints: tuple[str, ...] = ()
     status: str | None = None  # set when the ARN cannot be refreshed
     error_code: str | None = None
     error_message: str | None = None
@@ -60,10 +51,7 @@ class RefreshService:
         self.settings = settings
         self.jobs = JobRepository()
         self.resources = ResourceRepository()
-        # separate pools: slow AWS calls must never starve the DB reads used for polling
         self._db_limiter = anyio.CapacityLimiter(16)
-        self._aws_limiter = anyio.CapacityLimiter(settings.refresh_thread_limit)
-        self._background: set[asyncio.Future[None]] = set()
 
     # ------------------------------------------------------------------ resolve
     def resolve(self, arn: str) -> Resolved:
@@ -96,15 +84,7 @@ class RefreshService:
                 )
             account, region, resource_id = distinct[0]
         key = ResourceKey(cls.resource_type, account, region, resource_id)
-        return Resolved(arn, key=key, service_endpoints=cls.endpoints())
-
-    def reachable_inline(self, resolved: Resolved) -> bool:
-        assert resolved.key is not None
-        home = self.rt.common.home_region
-        return all(
-            self.rt.resolver.reachable_from(service, resolved.key.region, home)
-            for service in resolved.service_endpoints
-        )
+        return Resolved(arn, key=key)
 
     # ------------------------------------------------------------------ run
     async def refresh(
@@ -113,111 +93,28 @@ class RefreshService:
         """Returns (job, per-ARN results, all done, deduplicated)."""
         resolved = [await run_sync(self.resolve, arn, limiter=self._db_limiter) for arn in arns]
         refreshable = [r for r in resolved if r.key is not None]
-        inline_allowed = len(arns) <= self.settings.refresh_inline_max
         scope = ScanScope(arn=arns[0]) if len(arns) == 1 else ScanScope(arns=sorted(arns))
         job, created = await run_sync(self._create_job, scope, limiter=self._db_limiter)
-
-        inline: list[tuple[Resolved, ScanTask]] = []
         if created:
             new_tasks = [
                 NewTask(
                     r.key.account_id,
                     r.key.region,
-                    "inline" if inline_allowed and self.reachable_inline(r) else "ondemand",
+                    "ondemand",
                     resource_types=[r.key.resource_type],
                     resource_ids=[r.key.resource_id],
                 )
                 for r in refreshable
                 if r.key is not None
             ]
-            submitted = await run_sync(
-                self.rt.scheduler.submit, job, new_tasks, limiter=self._db_limiter
-            )
-            tasks = {_task_key(t): t for t in submitted.tasks}
-            inline = [
-                (r, tasks[r.key]) for r in refreshable if r.key and tasks[r.key].queue == "inline"
-            ]
+            await run_sync(self.rt.scheduler.submit, job, new_tasks, limiter=self._db_limiter)
 
-        deadline = anyio.current_time() + (wait_seconds if inline_allowed else 0)
-        semaphore = asyncio.Semaphore(self.settings.refresh_parallelism)
-        running = [self._spawn(self._run_inline(job, r, t, semaphore)) for r, t in inline]
-        if running:
-            await asyncio.wait(running, timeout=max(0.0, deadline - anyio.current_time()))
+        deadline = anyio.current_time() + wait_seconds
         final_tasks = await self._wait_tasks(job.job_id, deadline, expect_tasks=bool(refreshable))
         results = await run_sync(self._results, resolved, final_tasks, limiter=self._db_limiter)
         job_now = await run_sync(self._get_job, job.job_id, limiter=self._db_limiter)
         done = all(r.status != "pending" for r in results)
         return job_now or job, results, done, not created
-
-    def _spawn(self, coroutine: Any) -> asyncio.Future[None]:
-        """Keep a reference so the refresh finishes even after the response is sent."""
-        future: asyncio.Future[None] = asyncio.ensure_future(coroutine)
-        self._background.add(future)
-        future.add_done_callback(self._background.discard)
-        return future
-
-    async def _run_inline(
-        self, job: ScanJob, resolved: Resolved, task: ScanTask, semaphore: asyncio.Semaphore
-    ) -> None:
-        context = get_context()
-
-        def work() -> None:
-            with context_scope(**context, task_id=task.task_id):
-                try:
-                    self._execute_inline(job, resolved, task)
-                except Exception:
-                    log.exception("inline refresh failed")
-                    self._fail_task(task)
-
-        async with semaphore:
-            # abandon_on_cancel: if the request stops waiting, the refresh still completes
-            # and records its result; the client can poll the job.
-            await run_sync(work, limiter=self._aws_limiter, abandon_on_cancel=True)
-
-    def _fail_task(self, task: ScanTask) -> None:
-        try:
-            with self.rt.db.begin() as conn:
-                self.jobs.finish_task(
-                    conn,
-                    task.task_id,
-                    "failed",
-                    error_code="INTERNAL_ERROR",
-                    error_message="internal error",
-                    worker_id=API_WORKER_ID,
-                )
-        except Exception:
-            log.exception("could not record the failed refresh; maintenance will time it out")
-
-    def _execute_inline(self, job: ScanJob, resolved: Resolved, task: ScanTask) -> None:
-        assert resolved.key is not None
-        with self.rt.db.begin() as conn:
-            claimed = self.jobs.claim_task(
-                conn, task.task_id, API_WORKER_ID, stale_before=utcnow() - timedelta(minutes=30)
-            )
-        if claimed is None:
-            return
-        outcome: RefreshOutcome = self.rt.engine.refresh(resolved.key, job.job_id)
-        if outcome.status == "error" and outcome.error:
-            result = TypeResult.failure(outcome.error)
-            status, error = "failed", outcome.error
-        else:
-            result = TypeResult(TypeStatus.SUCCEEDED)
-            counter = _STATUS_COUNTERS.get(outcome.status, "unchanged")
-            setattr(result, counter, 1)
-            status, error = "succeeded", None
-        with self.rt.db.begin() as conn:
-            self.jobs.finish_task(
-                conn,
-                task.task_id,
-                status,  # type: ignore[arg-type]
-                result={
-                    resolved.key.resource_type: result.to_json()
-                    | {"refresh_status": outcome.status}
-                },
-                error_code=error.code if error else None,
-                error_message=error.message if error else None,
-                worker_id=API_WORKER_ID,
-            )
 
     async def _wait_tasks(
         self, job_id: str, deadline: float, *, expect_tasks: bool
@@ -273,8 +170,7 @@ class RefreshService:
                     code, message = contract_error(task.error_code, task.error_message)
                     results.append(ArnResult(r.arn, "error", r.key, code, message))
                     continue
-                inline_status = task.result.get(r.key.resource_type, {}).get("refresh_status")
-                status = inline_status or _status_from_row(self.resources.get(conn, r.key), task)
+                status = _status_from_row(self.resources.get(conn, r.key), task)
                 results.append(ArnResult(r.arn, status, r.key))
         return results
 

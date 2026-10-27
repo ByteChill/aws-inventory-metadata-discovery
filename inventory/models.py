@@ -230,7 +230,6 @@ class TypeStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     AUTH_DENIED = "auth_denied"
-    SKIPPED_NO_ENDPOINT = "skipped_no_endpoint"
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +308,7 @@ TERMINAL_TASK_STATUSES: frozenset[str] = frozenset(
     {"succeeded", "partial", "failed", "auth_denied", "timed_out"}
 )
 TERMINAL_JOB_STATUSES: frozenset[str] = frozenset({"succeeded", "partial", "failed", "timed_out"})
-QueueKind = Literal["scheduled", "ondemand", "inline"]
+QueueKind = Literal["scheduled", "ondemand"]
 Trigger = Literal["schedule", "api"]
 
 

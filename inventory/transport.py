@@ -7,6 +7,7 @@ interfaces exist; there are deliberately no placeholder implementations.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -226,27 +227,54 @@ class Dispatcher(Protocol):
     ) -> DispatchResult: ...
 
 
-class SqsDirectDispatcher:
-    """Scenario A: send straight to each region's queue (cross-region via peering endpoints)."""
+class QueueLocator:
+    """Queue URLs by naming convention (``inventory-<env>-<kind>``), resolved once per region."""
 
     def __init__(self, settings: CommonSettings, clients: ClientFactory) -> None:
         self._settings = settings
         self._clients = clients
+        self._urls: dict[tuple[str, str], str] = {}
+        self._lock = threading.Lock()
+
+    def url(self, region: str, kind: str) -> str:
+        key = (region, kind)
+        with self._lock:
+            if key not in self._urls:
+                client = self._clients.client("sqs", region)
+                name = self._settings.queue_name(kind)
+                self._urls[key] = client.get_queue_url(QueueName=name)["QueueUrl"]
+            return self._urls[key]
+
+
+class SqsDirectDispatcher:
+    """Scenario A: send straight to each region's queue (cross-region via peering endpoints)."""
+
+    def __init__(self, settings: CommonSettings, clients: ClientFactory) -> None:
+        self._clients = clients
+        self._resolver = clients.resolver
+        self.queues = QueueLocator(settings, clients)
 
     def dispatch(
         self, messages: Sequence[tuple[ScanTaskMessage, QueueKind]], delay_seconds: int = 0
     ) -> DispatchResult:
         result = DispatchResult()
-        by_queue: dict[tuple[str, str], list[ScanTaskMessage]] = {}
+        by_queue: dict[tuple[str, QueueKind], list[ScanTaskMessage]] = {}
         for message, kind in messages:
-            cell = self._settings.cell(message.region)
-            url = cell.ondemand_queue_url if kind == "ondemand" else cell.scheduled_queue_url
-            if not url:
-                result.failed.append((message.task_id, f"no {kind} queue for {cell.region}"))
-                continue
-            by_queue.setdefault((cell.region, url), []).append(message)
+            # 'global' tasks run on the us-east-1 worker
+            by_queue.setdefault((self._resolver.api_region(message.region), kind), []).append(
+                message
+            )
 
-        for (region, url), queued in by_queue.items():
+        for (region, kind), queued in by_queue.items():
+            try:
+                url = self.queues.url(region, kind)
+            except (ClientError, BotoCoreError) as exc:
+                log.warning(
+                    "queue lookup failed",
+                    extra={"region": region, "queue": kind, "error_code": type(exc).__name__},
+                )
+                result.failed.extend((m.task_id, type(exc).__name__) for m in queued)
+                continue
             client = self._clients.client("sqs", region)
             for start in range(0, len(queued), SQS_BATCH):
                 batch = queued[start : start + SQS_BATCH]

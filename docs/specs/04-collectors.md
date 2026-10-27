@@ -21,7 +21,7 @@
 1. 在对应服务文件中新增 collector 类并 `@register`。
 2. 在本文件中补充该类型的规格表。
 3. 新增 Alembic 迁移，创建分区（spec 02 §6）。
-4. 确认所需 endpoint；在 Terraform 中为各 region 的 cell 配置 `endpoints`（spec 08）。
+4. 确认各扫描 region 的 VPC 有该服务的 interface endpoint（由 infra 负责；同 region 调用不需要在配置中写地址）。
 5. 新增 seed / expected fixture 与测试：list、get（存在 / 不存在）、ARN 解析、list 与 get 结构一致。
 
 ---
@@ -208,7 +208,7 @@
 | not found | `NoSuchHostedZone` |
 | 范围 | v1 不采集 record set |
 
-`required_endpoints = ("route53",)`。
+使用 `route53` 服务（us-east-1 的 worker 调用）。
 
 ## 验收标准
 

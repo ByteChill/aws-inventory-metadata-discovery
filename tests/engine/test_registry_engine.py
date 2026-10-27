@@ -12,7 +12,7 @@ from inventory.collectors.base import Collector, Registry
 from inventory.config import get_common_settings
 from inventory.db import IndexEntry
 from inventory.engine import ScanEngine
-from inventory.models import ResourceKey, ScanTaskMessage, TypeStatus
+from inventory.models import ScanTaskMessage, TypeStatus
 from inventory.observability import ContextFilter
 from tests.conftest import FROZEN_NOW
 from tests.engine.fakes import FakeCollector, FakeCredentials, MemorySink, make_registry
@@ -100,15 +100,14 @@ def test_route_arn() -> None:
     assert registry.route_arn("arn:aws:other:::x") is None
 
 
-def test_for_region_skips_types_without_endpoints(
-    engine_parts: tuple[EndpointResolver, ClientFactory],
-) -> None:
+def test_applicable_splits_global_and_regional_types() -> None:
     registry, _ = make_registry()
 
-    available, skipped = registry.for_region("ap-east-1", engine_parts[0])
-
-    assert [c.resource_type for c in available] == ["Test::Child", "Test::Parent"]
-    assert [c.resource_type for c in skipped] == ["Test::Solo"]
+    assert [c.resource_type for c in registry.applicable("ap-east-1")] == [
+        "Test::Child",
+        "Test::Parent",
+        "Test::Solo",
+    ]
     assert registry.applicable("global") == []
 
 
@@ -121,7 +120,7 @@ def test_global_registry_has_v1_ec2_types() -> None:
 # --------------------------------------------------------------------------- engine
 
 
-def test_scan_passes_upstream_and_records_skips(
+def test_scan_passes_upstream(
     engine_parts: tuple[EndpointResolver, ClientFactory],
 ) -> None:
     registry, classes = make_registry()
@@ -132,11 +131,10 @@ def test_scan_passes_upstream_and_records_skips(
     assert results["Test::Parent"].status is TypeStatus.SUCCEEDED
     assert results["Test::Parent"].created == 2
     assert results["Test::Child"].created == 2
-    assert results["Test::Solo"].status is TypeStatus.SKIPPED_NO_ENDPOINT
-    assert classes["child"].seen_upstream["Test::Child"] == ["Test::Parent"]
+    assert results["Test::Solo"].status is TypeStatus.SUCCEEDED
+    assert "Test::Parent" in classes["child"].seen_upstream["Test::Child"]
     child = sink.applied["Test::Child"].upserts[0]
     assert child.relations == {"parent": "p-1"}
-    assert ("Test::Solo", TypeStatus.SKIPPED_NO_ENDPOINT, None) in sink.skips
 
 
 def test_upstream_failure_fails_dependents_without_deleting(
@@ -167,7 +165,7 @@ def test_access_denied_marks_every_type(
 
     results = make_engine(registry, engine_parts, sink, denied=True).scan(task())
 
-    assert {r.status for t, r in results.items() if t != "Test::Solo"} == {TypeStatus.AUTH_DENIED}
+    assert {r.status for r in results.values()} == {TypeStatus.AUTH_DENIED}
     assert not sink.applied
 
 
@@ -193,22 +191,6 @@ def test_keep_existing_is_rejected_for_types_with_dependents(
 
     assert results["Test::Parent"].status is TypeStatus.FAILED
     assert "Test::Parent" not in sink.applied
-
-
-def test_auto_added_dependency_without_endpoint_is_skipped(
-    engine_parts: tuple[EndpointResolver, ClientFactory],
-) -> None:
-    registry, classes = make_registry()
-    classes["parent"].service = "solo"  # no endpoint configured
-    try:
-        results = make_engine(registry, engine_parts, MemorySink()).scan(
-            task(resource_types=["Test::Child"])
-        )
-    finally:
-        classes["parent"].service = "ec2"
-
-    assert results["Test::Parent"].status is TypeStatus.SKIPPED_NO_ENDPOINT
-    assert results["Test::Child"].error_code == "UPSTREAM_FAILED"
 
 
 def test_listed_records_are_stamped_with_the_scan_start(
@@ -238,19 +220,16 @@ def test_batch_refresh_by_ids_never_deletes(
     assert not sink.applied
 
 
-def test_refresh_single_resource(engine_parts: tuple[EndpointResolver, ClientFactory]) -> None:
+def test_refreshed_record_shape(engine_parts: tuple[EndpointResolver, ClientFactory]) -> None:
     registry, _ = make_registry()
     sink = MemorySink()
-    engine = make_engine(registry, engine_parts, sink)
 
-    found = engine.refresh(ResourceKey("Test::Parent", ACCOUNT, "ap-east-1", "p-2"), "job-2")
-    missing = engine.refresh(ResourceKey("Test::Parent", ACCOUNT, "ap-east-1", "p-404"), "job-2")
-    unknown = engine.refresh(ResourceKey("Test::Nope", ACCOUNT, "ap-east-1", "x"), "job-2")
+    make_engine(registry, engine_parts, sink).scan(
+        task(resource_types=["Test::Parent"], resource_ids=["p-2"])
+    )
 
-    assert found.status == "updated" and found.record is not None
-    assert found.record.name is None and found.record.tags == {}
-    assert missing.status == "not_found"
-    assert unknown.status == "unsupported_type"
+    ((_, record),) = sink.refreshed
+    assert record is not None and record.name is None and record.tags == {}
 
 
 def test_worker_threads_keep_log_context(

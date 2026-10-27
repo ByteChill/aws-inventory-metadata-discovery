@@ -236,16 +236,21 @@ def test_account_region_cache(db: Engine) -> None:
             supported=["ap-east-1", "eu-west-1"],
             checked_at=T0,
         )
+    day, scan = timedelta(hours=24), ["ap-east-1", "eu-west-1"]
     with db.connect() as conn:
         fresh = regions.get_enabled(
-            conn, "123456789012", max_age=timedelta(hours=24), now=T0 + timedelta(hours=1)
+            conn, "123456789012", max_age=day, regions=scan, now=T0 + timedelta(hours=1)
         )
         stale = regions.get_enabled(
-            conn, "123456789012", max_age=timedelta(hours=24), now=T0 + timedelta(hours=25)
+            conn, "123456789012", max_age=day, regions=scan, now=T0 + timedelta(hours=25)
         )
-        unknown = regions.get_enabled(conn, "210987654321", max_age=timedelta(hours=24), now=T0)
+        unknown = regions.get_enabled(conn, "210987654321", max_age=day, regions=scan, now=T0)
+        # a scan region was added since the check: the cache does not cover it
+        region_added = regions.get_enabled(
+            conn, "123456789012", max_age=day, regions=[*scan, "us-east-1"], now=T0
+        )
 
-    assert (fresh, stale, unknown) == (["eu-west-1"], None, None)
+    assert (fresh, stale, unknown, region_added) == (["eu-west-1"], None, None, None)
 
 
 # --------------------------------------------------------------------------- jobs

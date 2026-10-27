@@ -498,9 +498,16 @@ class ScopeStateRepository:
 
 class AccountRegionRepository:
     def get_enabled(
-        self, conn: Connection, account_id: str, *, max_age: timedelta, now: datetime | None = None
+        self,
+        conn: Connection,
+        account_id: str,
+        *,
+        max_age: timedelta,
+        regions: Iterable[str],
+        now: datetime | None = None,
     ) -> list[str] | None:
-        """Cached enabled regions, or None when missing or older than ``max_age``."""
+        """Cached enabled regions, or None when missing, older than ``max_age`` or checked
+        against a different set of scan regions (a region was added or removed)."""
         rows = list(
             conn.execute(
                 select(
@@ -511,7 +518,7 @@ class AccountRegionRepository:
         if not rows:
             return None
         cutoff = (now or utcnow()) - max_age
-        if min(r.checked_at for r in rows) < cutoff:
+        if min(r.checked_at for r in rows) < cutoff or {r.region for r in rows} != set(regions):
             return None
         return sorted(r.region for r in rows if r.enabled)
 
@@ -969,12 +976,8 @@ class JobRepository:
             update(scan_task)
             .where(
                 # only running tasks heartbeat; queued/retrying ones wait in SQS (possibly
-                # behind a long backlog) and are covered by the job deadline instead. Inline
-                # (API) tasks never go through SQS: a queued one means the API process died.
-                or_(
-                    scan_task.c.status == "running",
-                    and_(scan_task.c.queue == "inline", scan_task.c.status == "queued"),
-                ),
+                # behind a long backlog) and are covered by the job deadline instead
+                scan_task.c.status == "running",
                 scan_task.c.updated_at < stale_before,
             )
             .values(status="timed_out", finished_at=when, updated_at=when, error_code="TIMED_OUT")

@@ -21,7 +21,7 @@ tests/worker/...  tests/fixtures/worker/...
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `region` | 必填 | 本 worker 所在 region，队列 URL 从 `cells[region]` 读取 |
+| `region` | 必填 | 本 worker 所在 region；队列按名字 `inventory-<env>-scheduled|ondemand` 用 `GetQueueUrl` 查找 |
 | `message_concurrency` | 2 | 同时处理的消息数 |
 | `type_concurrency` | 4 | 单条消息内并行执行的 collector 组数 |
 | `visibility_timeout_seconds` | 900 | 与队列配置一致 |
@@ -70,7 +70,7 @@ while not stopping:
 
 | 情况 | 处理 |
 |---|---|
-| 全部 `succeeded` / `skipped_no_endpoint` | task `succeeded` |
+| 全部 `succeeded` | task `succeeded` |
 | 全部 `auth_denied` | task `auth_denied` |
 | 有失败类型，其中可重试的存在且 `attempt < max_attempts` | 发送新消息：同一 `task_id`，`resource_types = 可重试的失败类型`（含其下游依赖），`attempt + 1`，带延迟；task 置为 `retrying`，`result` 合并本次结果 |
 | 有失败类型，但都不可重试或已达上限 | 有成功的类型 → `partial`；没有 → `failed` |
@@ -85,7 +85,7 @@ while not stopping:
 
 ## 6. 部署要点（细节见 spec 08）
 
-- 每个 region 一个 ECS 服务，arm64，0.5 vCPU / 1 GB 起步。
+- 每个 region 一个 ECS 服务，x86_64，0.5 vCPU / 1 GB 起步；镜像 `aws-inventory-discover/worker`（spec 08 R2）。
 - 自动扩缩：按两个队列的 `ApproximateNumberOfMessagesVisible` 之和做 step scaling；最小任务数可配置（默认 1，保证按需扫描能被及时处理），最大 20。
 - 队列：`visibility_timeout = 900`，DLQ `maxReceiveCount = 5`。
 

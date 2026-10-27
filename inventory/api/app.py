@@ -78,7 +78,7 @@ def create_app(
                 )
             )
             if common.metrics_mode == "api":
-                enable_metric_api(rt.clients.client("monitoring", common.home_region))
+                enable_metric_api(rt.clients.client("monitoring", common.primary_region))
         engine = async_engine
         if engine is None:
             engine = create_async_engine(

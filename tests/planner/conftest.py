@@ -19,7 +19,7 @@ from tests.engine.fakes import FakeCredentials
 from tests.helpers import load_fixture
 
 REGIONS = ("ap-east-1", "eu-west-1", "eu-west-2", "us-east-1")
-QUEUES = ("inventory-test-scheduled", "inventory-test-ondemand")
+QUEUES = ("inventory-local-scheduled", "inventory-local-ondemand")
 
 
 class BrokerCredentials(FakeCredentials):
@@ -51,7 +51,7 @@ def make_runtime(db: Engine, credentials: Any = None) -> Runtime:
     dispatcher = SqsDirectDispatcher(common, clients)
     sink = PostgresResultSink(db)
     engine = ScanEngine(registry, clients, resolver, creds, sink)
-    scheduler = Scheduler(common, db, creds, clients, registry, resolver, dispatcher)
+    scheduler = Scheduler(common, db, creds, clients, registry, dispatcher)
     return Runtime(
         common, resolver, clients, registry, db, creds, dispatcher, sink, engine, scheduler
     )

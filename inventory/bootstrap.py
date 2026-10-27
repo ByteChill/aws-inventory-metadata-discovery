@@ -48,7 +48,7 @@ def database_access(
     """Database URL plus, on AWS, a callable returning the current secret credentials."""
     if common.database_url is not None or not common.database_secret_arn:
         return resolve_database_url(common), None
-    provider = SecretsProvider(boto3_client=clients.client("secretsmanager", common.home_region))
+    provider = SecretsProvider(boto3_client=clients.client("secretsmanager", common.primary_region))
     arn = common.database_secret_arn
 
     def secret() -> dict[str, Any]:
@@ -87,7 +87,7 @@ def build_runtime(
         credentials=db_credentials,
     )
     credentials = BrokerLambdaProvider(
-        LambdaBrokerTransport(clients, common.broker_function_name, common.home_region)
+        LambdaBrokerTransport(clients, common.broker_function_name, common.primary_region)
     )
     dispatcher = SqsDirectDispatcher(common, clients)
     sink = PostgresResultSink(db)
@@ -100,7 +100,6 @@ def build_runtime(
         credentials,
         clients,
         registry,
-        resolver,
         dispatcher,
         account_region_max_age=timedelta(hours=common.account_region_max_age_hours),
     )

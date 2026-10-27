@@ -1,7 +1,7 @@
 """AWS client creation and endpoint routing.
 
 Every boto3 client in the project is created through :class:`ClientFactory`, which applies
-the endpoint routing from the region cells, the retry policy and call logging.
+the cross-region endpoint routing (``INVENTORY_ENDPOINTS``), the retry policy and call logging.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ValidationError
 
 from inventory import __version__
-from inventory.config import GLOBAL_REGION, CommonSettings
+from inventory.config import GLOBAL_REGION, US_EAST_1, CommonSettings
 from inventory.errors import AccessDeniedError, InventoryError, ThrottledError, UpstreamError
 from inventory.models import (
     RETRYABLE_BROKER_CODES,
@@ -43,35 +43,14 @@ class EndpointResolver:
         self._settings = settings
 
     def api_region(self, region: str) -> str:
-        """The region API calls go to; 'global' resources are served from the home region."""
-        return self._settings.global_home_region if region == GLOBAL_REGION else region
+        """The region API calls go to; 'global' resources are served from us-east-1."""
+        return US_EAST_1 if region == GLOBAL_REGION else region
 
     def endpoint_url(self, service: str, region: str) -> str | None:
+        """Endpoint-specific DNS for a cross-region call, else None (default DNS)."""
         if self._settings.aws_endpoint_url:
             return self._settings.aws_endpoint_url
-        cell = self._settings.find_cell(region)
-        if cell is None:
-            return None
-        return cell.endpoints.get(service) or None
-
-    def has_endpoint(self, service: str, region: str) -> bool:
-        if self._settings.aws_endpoint_url:
-            return True
-        cell = self._settings.find_cell(region)
-        return cell is not None and service in cell.endpoints
-
-    def reachable_from(self, service: str, region: str, caller_region: str) -> bool:
-        """Whether a process running in ``caller_region`` can call ``service`` in ``region``.
-
-        Same-region calls only need the service to be listed; cross-region calls need an
-        explicit endpoint-specific DNS name (reachable over VPC peering).
-        """
-        if self._settings.aws_endpoint_url:
-            return True
-        target = self.api_region(region)
-        if target == caller_region:
-            return self.has_endpoint(service, region)
-        return self.endpoint_url(service, region) is not None
+        return self._settings.endpoints.get(self.api_region(region), {}).get(service) or None
 
 
 class ClientFactory:

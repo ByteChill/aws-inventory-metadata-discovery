@@ -23,7 +23,7 @@
 | AWS SDK | boto3，只通过 `ClientFactory` 创建 client |
 | 测试 | pytest、moto、fakeredis[lua]、respx、time-machine |
 | 代码质量 | ruff（lint + format，行宽 100）、mypy（`inventory/` 为 strict） |
-| 容器 | Podman（`podman build` / `podman compose`），镜像 arm64 |
+| 容器 | Podman（`podman build` / `podman compose`）；每个组件一个镜像（`deploy/Containerfile`），x86_64 |
 | IaC | Terraform ≥ 1.10 |
 
 ## 常用命令
@@ -40,7 +40,9 @@ make test-int   # 集成测试（PostgreSQL / Redis）
 
 单个测试：`uv run pytest tests/broker/test_service.py -k lock`。
 
-Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terraform validate`（先 `init -backend=false`）。新增资源类型如需新的 endpoint，在 `terraform/envs/*.tfvars` 的 `regions.*.endpoints` 中配置。
+Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terraform validate`（先 `init -backend=false`）。`terraform/envs/*.tfvars` 的 `regions.*.endpoints` 只写跨 region 调用用到的 endpoint 专用 DNS（spec 08 R7）。
+
+镜像与离线 DDL：`make images`（`deploy/build.sh <component>`）、`make ddl`（`deploy/ddl.sh <from> <to>`）。
 
 ## 代码组织
 
@@ -50,7 +52,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 | `inventory/errors.py` | `InventoryError` 及子类 |
 | `inventory/observability.py` | 日志、上下文、脱敏、AWS 调用日志、指标、计时 |
 | `inventory/models.py` | 跨模块共享的数据类型与消息/契约模型 |
-| `inventory/aws.py` | `EndpointResolver`、`ClientFactory`、`BrokerLambdaProvider` |
+| `inventory/aws.py` | `EndpointResolver`（只处理跨 region 的 `INVENTORY_ENDPOINTS`）、`ClientFactory`、`BrokerLambdaProvider` |
 | `inventory/db.py` | 表定义、Repository（同步） |
 | `inventory/engine.py` | `ScanEngine`、`reconcile`、`TaskExecutor` |
 | `inventory/scheduling.py` | scope 展开、task 创建与投递 |
@@ -60,6 +62,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 | `inventory/broker/` | broker v2 内部模块 |
 | `inventory/api/` | FastAPI 应用：`app.py`（工厂）、`middleware.py`、`errors.py`、`schemas.py`、`queries.py`（异步查询）、`refresh.py`、`state.py`、`resources.py`、`scans.py`；`ui/` 为内置静态页面（原生 JS，只调用 `/v1`，数据一律用 `textContent` 渲染） |
 | `inventory/handlers/` | 部署入口，只做组装与参数转换，**不写业务逻辑** |
+| `deploy/` | 镜像构建（每个组件一个 target）、组件版本 `versions.json`、离线 DDL |
 
 单个模块超过约 800 行时再拆分，拆分前先在对应 spec 中更新文件清单。
 
@@ -70,7 +73,8 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - 时间：一律使用带时区的 UTC `datetime`（`datetime.now(UTC)`），不使用 naive datetime。
 - ID：`job_id`、`task_id`、生成的 `request_id` 使用 ULID。
 - 错误：业务错误抛 `InventoryError` 子类，调用方依据 `code` / `retryable` 处理，不解析异常消息。不要 `except Exception: pass`；捕获宽泛异常时必须记录日志并重新抛出或转换。
-- AWS client：`inventory/` 中只通过 `ClientFactory.client(...)` 或 `CollectorContext.client(...)` 创建，禁止直接 `boto3.client(...)`（否则会丢失 endpoint 路由、重试配置和调用日志）。测试代码中可以直接创建 moto client。
+- AWS client：`inventory/` 中只通过 `ClientFactory.client(...)` 或 `CollectorContext.client(...)` 创建，禁止直接 `boto3.client(...)`（否则会丢失跨 region 的 endpoint 路由、重试配置和调用日志）。测试代码中可以直接创建 moto client。
+- 基础设施由 infra 保证：不写"某个 endpoint 可能不存在"之类的检查或兜底逻辑。
 - 线程：`ThreadPoolExecutor` 提交任务必须用 `observability.submit_with_context`，否则日志上下文丢失。
 - 敏感信息：凭证、SAML、密码只用 `SecretStr` 承载，不传给 logger，不写入异常消息。
 - 不写只是复述代码的注释；只在"为什么"不明显时写注释。
@@ -105,7 +109,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - `resource` 表按 `resource_type` LIST 分区，分区名由 `db.partition_name()` 生成。**新增资源类型必须新增迁移创建分区**；测试会检查 `r_default` 为空。
 - 迁移手写，`upgrade` 与 `downgrade` 都要实现并可往返。
 - 写 `resource` 只能通过 `ResourceRepository.upsert` / `soft_delete`，它们包含 `observed_at` 并发保护，不要绕过。
-- 资源从不硬删除，只软删除；由 `maintenance` 在 30 天后清理。
+- 资源从不硬删除，只软删除；由 `maintenance` 在保留期（`PLANNER_DELETED_RETENTION_DAYS`，默认 180 天）后清理。
 - API 只读查询使用异步 engine；worker、planner、刷新使用同步 engine。
 
 ## Collector 规范
@@ -130,6 +134,16 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - 分支：`feat/<spec 编号>-<描述>`、`fix/<描述>`、`docs/<描述>`。
 - 提交信息：Conventional Commits（`feat:`、`fix:`、`docs:`、`test:`、`refactor:`、`chore:`）。
 - 不提交 `.env`、密钥、真实账号数据；fixture 中的账号 ID 使用 `123456789012`、`210987654321` 等示例值。
+
+## 独立发布的兼容规则
+
+四个组件（broker、planner、api、worker）各自升版本、单独发布，线上会同时运行不同版本：
+
+1. **数据库结构先加后删**：迁移只做旧代码也能运行的变更（加表、加可空列、加索引、加分区）；删除或改名分两次发布：先加新结构并让所有组件改用，全部发布后再删旧结构。
+2. **跨组件消息带版本**：SQS 消息与 broker 请求 / 响应带 `version`；改格式时先发布同时接受新旧格式的接收方，再改发送方。
+3. **新增资源类型的顺序**：迁移（建分区，随 worker 镜像发布）→ worker → planner / API。
+4. **新增环境变量**：必须有默认值，或先在 Terraform 中配置再发布使用它的代码。
+5. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。
 
 ## 不要做
 

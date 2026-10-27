@@ -94,7 +94,7 @@ def test_retryable_failure_requeues_only_failed_types(db: Engine) -> None:
 
     executor(db, FakeEngine("partial_retryable")).handle(body(job_id, task_id), noop)
 
-    (retry,) = drain("eu-west-1", "inventory-test-ondemand")
+    (retry,) = drain("eu-west-1", "inventory-local-ondemand")
     message = ScanTaskMessage.model_validate_json(retry["Body"])
     with db.connect() as conn:
         task = jobs.get_task(conn, task_id)
@@ -108,7 +108,7 @@ def test_retry_success_merges_results(db: Engine) -> None:
     job_id, task_id = new_task(db)
     ex = executor(db, FakeEngine("partial_retryable", "ok"))
     ex.handle(body(job_id, task_id), noop)
-    (retry,) = drain("eu-west-1", "inventory-test-ondemand")
+    (retry,) = drain("eu-west-1", "inventory-local-ondemand")
 
     ex.handle(retry["Body"], noop)
 
@@ -135,7 +135,7 @@ def test_final_statuses(db: Engine, scenario: str, attempt: int, status: str) ->
     with db.connect() as conn:
         task = jobs.get_task(conn, task_id)
     assert task is not None and task.status == status
-    assert drain("eu-west-1", "inventory-test-ondemand") == []
+    assert drain("eu-west-1", "inventory-local-ondemand") == []
 
 
 def test_crash_retries_the_whole_message(db: Engine) -> None:
@@ -143,7 +143,7 @@ def test_crash_retries_the_whole_message(db: Engine) -> None:
 
     executor(db, FakeEngine(crash=True)).handle(body(job_id, task_id), noop)
 
-    (retry,) = drain("eu-west-1", "inventory-test-ondemand")
+    (retry,) = drain("eu-west-1", "inventory-local-ondemand")
     message = ScanTaskMessage.model_validate_json(retry["Body"])
     assert message.resource_types is None and message.attempt == 2
 
@@ -193,15 +193,18 @@ def worker_settings(**overrides: Any) -> WorkerSettings:
     return WorkerSettings(**values)
 
 
+QUEUE_KINDS = ("ondemand", "scheduled")
+
+
 def make_worker(handle: Any, **overrides: Any) -> tuple[Worker, Any]:
-    cell = get_common_settings().cell("eu-west-1")
     sqs = boto3.client("sqs", region_name="eu-west-1")
+    url = {k: sqs.get_queue_url(QueueName=f"inventory-local-{k}")["QueueUrl"] for k in QUEUE_KINDS}
     worker = Worker(
         worker_settings(**overrides),
         sqs,
         handle,
-        ondemand_url=str(cell.ondemand_queue_url),
-        scheduled_url=str(cell.scheduled_queue_url),
+        ondemand_url=url["ondemand"],
+        scheduled_url=url["scheduled"],
     )
     return worker, sqs
 

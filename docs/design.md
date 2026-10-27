@@ -76,7 +76,7 @@
 | 各 region worker → RDS Proxy | 写入扫描结果 |
 | API → 目标 region 的 ec2/ecs/... endpoint | 单 ARN 同步刷新 |
 
-代码中所有 boto3 client 都经 `EndpointResolver(service, region)` 创建，endpoint 地址由配置提供（`RegionCell.endpoints`）。
+代码中所有 boto3 client 都经 `ClientFactory` 创建：同 region 只给服务名和 region（默认域名解析到本 VPC 的 endpoint）；跨 region 的 endpoint 专用 DNS 由环境变量 `INVENTORY_ENDPOINTS` 提供，每个组件只配置自己用到的（spec 08 R4、R7）。
 
 ## 5. 核心流程
 
@@ -97,10 +97,9 @@
 
 ### 5.3 单 ARN 刷新（消费者修改资源后调用）
 
-1. `POST /v1/resources/refresh`，body 为 ARN 列表（≤20 个）。
-2. API 创建 job，在进程内的线程池中执行：ARN 路由到 collector → broker 取凭证 → 经目标 region endpoint 调用 `get_resource` → 对账写库（存在则 upsert，不存在则软删除）。如果目标 region 的服务 endpoint 在 cell 配置中不可达（例如没有 S3 interface endpoint），该 ARN 改为投递到目标 region 的 `ondemand` 队列，由 worker 执行。
-3. 在 `wait_seconds`（默认 20）内完成返回 200 和每个 ARN 的结果（`updated / unchanged / deleted / not_found / error`）；超时返回 202。
-4. 超过 20 个 ARN 时转为异步 job，按 `(account, region, type)` 分组投递到 `ondemand` 队列。
+1. `POST /v1/resources/refresh`，body 为 ARN 列表（≤100 个）。
+2. API 创建 job，每个 ARN 一个 task（`resource_ids=[id]`），投递到资源所在 region 的 `ondemand` 队列；该 region 的 worker 调用 `get_resource` 并对账写库（存在则 upsert，不存在则软删除）。API 进程不调用 AWS 采集资源。
+3. 在 `wait_seconds`（默认 20）内完成返回 200 和每个 ARN 的结果（`created / updated / unchanged / deleted / not_found / error`）；未完成返回 202。
 
 注意：EC2 等 API 是最终一致的，刚修改完立即刷新可能读到旧值，API 文档中需说明。
 
@@ -117,8 +116,8 @@
 | D7 | `resource` 表按 `resource_type` LIST 分区，各分区列结构相同，通用 `relations` 列 | 满足"按 type 分表"，同时跨类型查询无需 UNION |
 | D8 | 唯一键为 resource key，不用 ARN | ARN 格式不统一（AMI 的 ARN 不含账号） |
 | D9 | broker 两级 Redis 缓存（SAML assertion + 每账号 STS 凭证），加锁防并发重复获取 | assertion 含所有 role，ADFS 约 25 分钟登录一次 |
-| D10 | 单 ARN 刷新在 API 进程内同步执行，`wait_seconds` 长轮询 | 方案 A 网络可达，约 1 秒完成 |
-| D11 | 全局资源 `region=global`，由 us-east-1 cell 扫描；collector 声明 `required_endpoints`，缺 endpoint 自动跳过 | IAM/Route 53 endpoint 是否可用由配置决定，不改代码 |
+| D10 | 单 ARN 刷新投递给资源所在 region 的 worker，API 用 `wait_seconds` 长轮询结果 | worker 在本 region 调用（同 region 无需配置 endpoint）；API 只需各 region 的 SQS 地址 |
+| D11 | 全局资源 `region=global`，由 us-east-1 cell 扫描；所需 endpoint 由 infra 保证，代码不判断是否存在 | 不为可能缺失的基础设施写兜底逻辑 |
 | D12 | ECS TaskDefinition 只采集 service **正在使用**的 revision | 业务关心实际运行的定义 |
 | D13 | 变更历史只预留 `ChangeSink` 接口（v1 为空实现） | v1 范围控制；以后接 outbox → S3 → Athena |
 | D14 | 方案 B（region 间无 peering）只预留接口，正式方案为"非 VPC Lambda 集中部署在 ap-east-1" | 见 §7.2 |
@@ -131,7 +130,7 @@
 
 即 §4。前提：endpoint 安全组放行对端 VPC CIDR；RDS Proxy、ap-east-1 的 Lambda endpoint 放行三个 spoke region 的 CIDR。
 
-新增 region（方案 A）：建 VPC + 被扫描服务的 interface endpoint → 与 ap-east-1 建 peering，配置路由与安全组 → 在 `RegionCell` 配置中加入该 region 及 endpoint DNS → Terraform 部署 cell → 加入 `supported_regions`。
+新增 region（方案 A）：建 VPC + 被扫描服务的 interface endpoint → 与 ap-east-1 建 peering，配置路由与安全组 → 在 tfvars 的 `regions` 中加入该 region（VPC、子网、其 `sqs` 的专用 DNS）→ apply：Terraform 创建该 region 的队列与 worker，并更新 planner / API 的 `INVENTORY_SCAN_REGIONS` 与 `INVENTORY_ENDPOINTS`。
 
 ### 7.2 方案 B（只预留接口，不实现）
 
@@ -165,7 +164,7 @@ Aurora PostgreSQL（新库，与 account list 分离）。详见 [specs/02-data-
 | `account_region` | 账号已启用 region 的缓存 |
 | `scan_job` / `scan_task` | 扫描任务与执行记录 |
 
-软删除的资源保留 30 天后清理。
+软删除的资源默认保留 180 天后清理（`PLANNER_DELETED_RETENTION_DAYS`，Terraform 变量 `deleted_retention_days`）。
 
 ## 9. 凭证（broker v2）
 

@@ -192,11 +192,10 @@ async def coverage(state: State, account_id: str) -> CoverageResponse:
         CoverageScope.model_validate({k: s[k] for k in CoverageScope.model_fields if k in s})
         for s in scopes
     ]
-    registry, resolver = state.runtime.registry, state.runtime.resolver
+    registry = state.runtime.registry
     expected_regions = [*enabled, GLOBAL_REGION] if enabled else []
     for region in expected_regions:
-        available, _ = registry.for_region(region, resolver)
-        for cls in available:
+        for cls in registry.applicable(region):
             if (region, cls.resource_type) not in seen:
                 items.append(
                     CoverageScope(region=region, resource_type=cls.resource_type, status="never")
@@ -213,10 +212,7 @@ async def resource_types(state: State) -> ResourceTypesResponse:
     runtime = state.runtime
     items: list[ResourceTypeOut] = []
     for cls in runtime.registry.all():
-        regions = [GLOBAL_REGION] if cls.is_global else runtime.common.supported_regions
-        enabled = [
-            r for r in regions if all(runtime.resolver.has_endpoint(s, r) for s in cls.endpoints())
-        ]
+        enabled = [GLOBAL_REGION] if cls.is_global else list(runtime.common.scan_regions)
         items.append(
             ResourceTypeOut(
                 resource_type=cls.resource_type,
@@ -247,7 +243,7 @@ register_url_convertor("arn", _ArnConvertor())
 
 
 def check_path(state: ApiState, region: str, resource_type: str | None = None) -> None:
-    if region not in (GLOBAL_REGION, *state.runtime.common.supported_regions):
+    if region not in (GLOBAL_REGION, *state.runtime.common.scan_regions):
         raise ValidationFailedError(f"region {region} is not supported")
     if resource_type is None:
         return

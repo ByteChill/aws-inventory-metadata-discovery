@@ -13,11 +13,11 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import Engine
 
-from inventory.aws import AwsClient, ClientFactory, EndpointResolver
+from inventory.aws import AwsClient, ClientFactory
 from inventory.collectors.base import Registry
-from inventory.config import GLOBAL_REGION, CommonSettings
+from inventory.config import GLOBAL_REGION, US_EAST_1, CommonSettings
 from inventory.db import AccountRegionRepository, JobRepository
-from inventory.errors import REGION_NOT_ENABLED_CODES, BadRequestError, UpstreamError
+from inventory.errors import BadRequestError, UpstreamError
 from inventory.models import (
     NewTask,
     QueueKind,
@@ -40,7 +40,6 @@ class Scheduler:
         credentials: CredentialProvider,
         clients: ClientFactory,
         registry: Registry,
-        resolver: EndpointResolver,
         dispatcher: Dispatcher,
         *,
         account_region_max_age: timedelta = timedelta(hours=24),
@@ -51,7 +50,6 @@ class Scheduler:
         self.credentials = credentials
         self.clients = clients
         self.registry = registry
-        self.resolver = resolver
         self.dispatcher = dispatcher
         self.max_age = account_region_max_age
         self.clock = clock
@@ -60,45 +58,29 @@ class Scheduler:
 
     # ------------------------------------------------------------------ regions
     def enabled_regions(self, account_id: str) -> list[str]:
-        """Enabled ∩ supported regions for an account (cached in account_region)."""
+        """Enabled ∩ scan regions for an account (cached in account_region)."""
+        scan_regions = self.settings.scan_regions
         with self.db.connect() as conn:
             cached = self.account_regions.get_enabled(
-                conn, account_id, max_age=self.max_age, now=self.clock()
+                conn, account_id, max_age=self.max_age, regions=scan_regions, now=self.clock()
             )
         if cached is not None:
             return cached
         enabled = self._describe_regions(account_id)
-        supported = self.settings.supported_regions
         # jitter so that 1000+ accounts do not all expire (and hit the broker) together
         checked_at = self.clock() - timedelta(minutes=random.randint(0, 120))
         with self.db.begin() as conn:
             self.account_regions.replace(
-                conn, account_id, enabled=enabled, supported=supported, checked_at=checked_at
+                conn, account_id, enabled=enabled, supported=scan_regions, checked_at=checked_at
             )
-        return sorted(r for r in supported if r in enabled)
+        return sorted(r for r in scan_regions if r in enabled)
 
     def _describe_regions(self, account_id: str) -> set[str]:
+        # us-east-1 is enabled for every account; the primary region is opt-in
         session = self.credentials.session(account_id)
-        home = self.settings.home_region
-        candidates = [home, *(r for r in self.settings.supported_regions if r != home)]
-        last_error: Exception | None = None
-        for api_region in candidates:
-            client: AwsClient = self.clients.client("ec2", api_region, session)
-            try:
-                response = client.describe_regions(AllRegions=False)
-            except ClientError as exc:
-                code = exc.response.get("Error", {}).get("Code", "")
-                if code in REGION_NOT_ENABLED_CODES:
-                    # the account has not opted in to this region; ask another one
-                    last_error = exc
-                    continue
-                raise
-            return {r["RegionName"] for r in response.get("Regions", [])}
-        raise UpstreamError(
-            f"could not list regions for {account_id}: {type(last_error).__name__}",
-            retryable=False,
-            code="REGION_NOT_ENABLED",
-        )
+        client: AwsClient = self.clients.client("ec2", US_EAST_1, session)
+        response = client.describe_regions(AllRegions=False)
+        return {r["RegionName"] for r in response.get("Regions", [])}
 
     # ------------------------------------------------------------------ expansion
     def expand(self, scope: ScanScope, queue: QueueKind) -> list[NewTask]:
@@ -109,10 +91,7 @@ class Scheduler:
         account = scope.account_id
         if scope.region is None and scope.resource_type is None:
             tasks = [NewTask(account, region, queue) for region in self.enabled_regions(account)]
-            available, _ = self.registry.for_region(GLOBAL_REGION, self.resolver)
-            if available:
-                tasks.append(NewTask(account, GLOBAL_REGION, queue))
-            return tasks
+            return [*tasks, NewTask(account, GLOBAL_REGION, queue)]
         rtype = scope.resource_type
         if scope.region is not None:
             regions = [scope.region]
@@ -120,48 +99,31 @@ class Scheduler:
                 raise BadRequestError(f"region {scope.region} is not enabled for account {account}")
         elif rtype is not None and self.registry.get(rtype).is_global:
             regions = [GLOBAL_REGION]
-        elif rtype is not None:
-            regions = [r for r in self.enabled_regions(account) if self._available(rtype, r)]
+        else:
+            regions = self.enabled_regions(account)
             if not regions:
-                raise BadRequestError(
-                    f"{rtype} is not available in any region enabled for account {account}"
-                )
+                raise BadRequestError(f"account {account} has none of the scan regions enabled")
         types = [rtype] if rtype else None
         return [NewTask(account, region, queue, resource_types=types) for region in regions]
 
     def validate(self, scope: ScanScope) -> None:
-        """Checks that need no account data: supported region, known type, endpoints."""
+        """Checks that need no account data: scan region, known type, global/regional match."""
         region, rtype = scope.region, scope.resource_type
-        if region not in (None, GLOBAL_REGION, *self.settings.supported_regions):
+        if region not in (None, GLOBAL_REGION, *self.settings.scan_regions):
             raise BadRequestError(f"region {region} is not supported")
         if rtype is None:
             return
         if not self.registry.has(rtype):
             raise BadRequestError(f"unknown resource_type {rtype}")
-        cls = self.registry.get(rtype)
-        if region is None:
-            candidates = [GLOBAL_REGION] if cls.is_global else self.settings.supported_regions
-            if not any(self._available(rtype, r) for r in candidates):
-                raise BadRequestError(f"{rtype} is not available in any supported region")
-            return
-        if cls.is_global != (region == GLOBAL_REGION):
+        if region is not None and self.registry.get(rtype).is_global != (region == GLOBAL_REGION):
             raise BadRequestError(f"{rtype} cannot be scanned in region {region}")
-        if not self._available(rtype, region):
-            raise BadRequestError(f"{rtype} is not available in region {region} (no endpoint)")
-
-    def _available(self, resource_type: str, region: str) -> bool:
-        endpoints = self.registry.get(resource_type).endpoints()
-        return all(self.resolver.has_endpoint(s, region) for s in endpoints)
 
     # ------------------------------------------------------------------ submit
     def submit(self, job: ScanJob, tasks: Sequence[NewTask]) -> SubmitResult:
-        """Write tasks first, then dispatch; failed sends are marked DISPATCH_FAILED.
-
-        Inline tasks (API refresh) are created but not dispatched.
-        """
+        """Write tasks first, then dispatch; failed sends are marked DISPATCH_FAILED."""
         with self.db.begin() as conn:
             created = self.jobs.create_tasks(conn, job.job_id, tasks, now=self.clock())
-        queued = [t for t in created if t.status == "queued" and t.queue != "inline"]
+        queued = [t for t in created if t.status == "queued"]
         messages = [(message_for(job, t), t.queue) for t in queued]
         try:
             result = self.dispatcher.dispatch(messages) if messages else DispatchResult()

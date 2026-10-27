@@ -211,14 +211,8 @@ class ScanEngine:
 
     def _scan(self, task: ScanTaskMessage) -> dict[str, TypeResult]:
         results: dict[str, TypeResult] = {}
-        # Expand dependencies first, then check endpoints, so an auto-added dependency
-        # without an endpoint is skipped instead of being called anyway.
         groups = self.registry.groups([c.resource_type for c in self._requested_types(task)])
-        every = [cls for group in groups for cls in group]
-        available, skipped = self._split_by_endpoint(every, task.region)
-        for cls in skipped:
-            results[cls.resource_type] = TypeResult(TypeStatus.SKIPPED_NO_ENDPOINT)
-            self._record_skip(task, cls.resource_type, TypeStatus.SKIPPED_NO_ENDPOINT, None)
+        available = [cls for group in groups for cls in group]
         if not available:
             return results
 
@@ -245,12 +239,9 @@ class ScanEngine:
             return results
 
         state = _TaskState()
-        skipped_types = {c.resource_type for c in skipped}
         with ThreadPoolExecutor(max_workers=max(1, self.type_concurrency)) as pool:
             futures = [
-                submit_with_context(
-                    pool, self._run_group, task, group, session, state, skipped_types
-                )
+                submit_with_context(pool, self._run_group, task, group, session, state)
                 for group in groups
             ]
             for future in futures:
@@ -262,16 +253,6 @@ class ScanEngine:
             return [self.registry.get(t) for t in task.resource_types]
         return self.registry.applicable(task.region)
 
-    def _split_by_endpoint(
-        self, types: Sequence[type[Collector]], region: str
-    ) -> tuple[list[type[Collector]], list[type[Collector]]]:
-        available: list[type[Collector]] = []
-        skipped: list[type[Collector]] = []
-        for cls in types:
-            ok = all(self.resolver.has_endpoint(s, region) for s in cls.endpoints())
-            (available if ok else skipped).append(cls)
-        return available, skipped
-
     def _has_dependents(self, resource_type: str) -> bool:
         return any(resource_type in c.depends_on for c in self.registry.all())
 
@@ -281,15 +262,10 @@ class ScanEngine:
         group: Sequence[type[Collector]],
         session: Any,
         state: _TaskState,
-        skipped_types: set[str],
     ) -> dict[str, TypeResult]:
         results: dict[str, TypeResult] = {}
         for cls in group:
-            if cls.resource_type in skipped_types:
-                continue  # already reported as skipped_no_endpoint
-            blocker = next(
-                (d for d in cls.depends_on if d in state.failed or d in skipped_types), None
-            )
+            blocker = next((d for d in cls.depends_on if d in state.failed), None)
             if blocker is not None:
                 upstream_error = state.failed.get(blocker)
                 error = ErrorInfo(
@@ -395,26 +371,6 @@ class ScanEngine:
             result.retryable = all(e.retryable for e in errors)
         self._log_type_result(cls.resource_type, result, task.region)
         return result
-
-    # ------------------------------------------------------------------ single refresh
-    def refresh(self, key: ResourceKey, job_id: str) -> RefreshOutcome:
-        with context_scope(
-            job_id=job_id,
-            account_id=key.account_id,
-            region=key.region,
-            resource_type=key.resource_type,
-        ):
-            if not self.registry.has(key.resource_type):
-                return RefreshOutcome("unsupported_type")
-            try:
-                cls = self.registry.get(key.resource_type)
-                session = self.credentials.session(key.account_id)
-                collector = cls(
-                    self._context(key.account_id, key.region, session, False, _TaskState())
-                )
-            except Exception as exc:
-                return RefreshOutcome("error", error=classify(exc))
-            return self._refresh_with(collector, key, job_id)
 
     def _refresh_with(self, collector: Collector, key: ResourceKey, job_id: str) -> RefreshOutcome:
         try:
@@ -687,7 +643,7 @@ class TaskExecutor:
 
 def task_status(results: Mapping[str, TypeResult]) -> str:
     statuses = {r.status for r in results.values()}
-    ok = {TypeStatus.SUCCEEDED, TypeStatus.SKIPPED_NO_ENDPOINT}
+    ok = {TypeStatus.SUCCEEDED}
     if not statuses or statuses <= ok:
         return "succeeded"
     if statuses == {TypeStatus.AUTH_DENIED}:

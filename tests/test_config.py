@@ -8,20 +8,21 @@ from inventory.errors import NotImplementedFeatureError
 from tests.helpers import load_fixture
 
 
-def test_parses_cells_from_json_env(settings_env: dict[str, str]) -> None:
+def test_parses_regions_and_endpoints_from_env(settings_env: dict[str, str]) -> None:
     settings = get_common_settings()
 
-    assert settings.supported_regions == ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
-    assert settings.cell("eu-west-1").endpoints["sqs"].startswith("https://vpce-0a1-sqs")
-    # 'global' resolves to the global home region's cell
-    assert settings.cell("global").region == "us-east-1"
+    assert settings.primary_region == "ap-east-1"
+    assert settings.scan_regions == ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
+    assert settings.endpoints["eu-west-1"]["sqs"].startswith("https://vpce-0a1-sqs")
+    assert settings.broker_function_name == "inventory-local-adfs-broker"
+    assert settings.queue_name("ondemand") == "inventory-local-ondemand"
 
 
-def test_missing_cell_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key, value in load_fixture("foundation/settings.missing_cell.json").items():
+def test_scan_regions_must_include_us_east_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in load_fixture("foundation/settings.no_us_east_1.json").items():
         monkeypatch.setenv(key, value)
 
-    with pytest.raises(ValidationError, match="supported regions without a cell"):
+    with pytest.raises(ValidationError, match="must include us-east-1"):
         CommonSettings()
 
 
@@ -37,8 +38,3 @@ def test_reserved_features_fail_fast(
 
     with pytest.raises(NotImplementedFeatureError):
         get_common_settings()
-
-
-def test_unknown_cell_raises(settings_env: dict[str, str]) -> None:
-    with pytest.raises(KeyError):
-        get_common_settings().cell("sa-east-1")

@@ -39,7 +39,7 @@
 | 400 | `BAD_REQUEST` | 无法解析的请求，如非法 cursor |
 | 404 | `NOT_FOUND` | 资源或 job 不存在 |
 | 422 | `VALIDATION_ERROR` | 参数校验失败 |
-| 403 | `ACCOUNT_ACCESS_DENIED` | broker 拒绝该账号（仅同步刷新时可能出现） |
+| 403 | `ACCOUNT_ACCESS_DENIED` | broker 拒绝该账号（刷新结果中的 `error.code`） |
 | 501 | `NOT_IMPLEMENTED` | 预留接口，如 `/v1/history/*` |
 | 502 | `UPSTREAM_ERROR` | AWS 或 broker 返回不可重试错误 |
 | 503 | `UPSTREAM_THROTTLED` | AWS 或 broker 限流，客户端可稍后重试 |
@@ -94,7 +94,7 @@
 | `observed_at` | 这份数据从 AWS 读取的时间 |
 | `last_changed_at` | 内容最后一次变化的时间 |
 | `verified_at` | 所属 scope 最后一次成功完整扫描的时间（来自 `scope_state`），表示数据至少在该时刻是准确的。可能早于 `observed_at`（单 ARN 刷新只更新 `observed_at`） |
-| `deleted_at` | 非空表示资源在 AWS 已不存在（软删除，保留 30 天） |
+| `deleted_at` | 非空表示资源在 AWS 已不存在（软删除，默认保留 180 天，可配置） |
 
 ### 2.2 ScanScope
 
@@ -106,15 +106,15 @@
 |---|---|
 | `account_id` | 该账号所有已启用受支持 region（含 global）的所有类型 |
 | `account_id` + `region` | 该 region 的所有类型；`region` 可为 `global` |
-| `account_id` + `resource_type` | 该类型在所有可扫描 region 中扫描：regional 类型取「账号已启用的 region ∩ `supported_regions`（部署了 worker 的 region）∩ 该类型 endpoint 可用的 region」，每个 region 一个 task；global 类型即 `global` |
+| `account_id` + `resource_type` | 该类型在所有可扫描 region 中扫描：regional 类型取「账号已启用的 region ∩ 扫描 region（部署了 worker 的 region）」，每个 region 一个 task；global 类型即 `global` |
 | `account_id` + `region` + `resource_type` | 该 region 的某一类型 |
 | `arn`（单独使用） | 单个资源；等价于 `POST /v1/resources/refresh` 只传一个 ARN |
 
 校验（不通过返回 422 `VALIDATION_ERROR`，不创建 job）：
 
 - `arn` 不能与其他字段同时出现；其余组合必须有 `account_id`。
-- `region` 必须是 `global` 或在 `supported_regions` 中；非 `global` 的 `region` 还必须是该账号已启用的 region（`account_region`，缓存过期时调用 `describe_regions` 刷新）。
-- `resource_type` 必须已注册；指定 `region` 时须适用于该 region（global 类型只能配 `global`）且所需 endpoint 已配置。
+- `region` 必须是 `global` 或扫描 region 之一；非 `global` 的 `region` 还必须是该账号已启用的 region（`account_region`，缓存过期时调用 `describe_regions` 刷新）。
+- `resource_type` 必须已注册；指定 `region` 时须适用于该 region（global 类型只能配 `global`）。
 - 只有 `resource_type` 没有 `region` 时，上述交集为空即返回 422（该类型对此账号不可扫描）。
 
 ### 2.3 ScanJob
@@ -195,7 +195,7 @@
 | `GET /v1/resources/{account_id}/{region}/{resource_type}` | `account_id=…&region=…&resource_type=…` | `Page[Resource]` |
 | `GET /v1/resources/{account_id}/{region}/{arn}` | `GET /v1/resources/by-arn?arn=…`（只接受 `include_deleted`） | `Resource`（full 视图） |
 
-- `account_id` 必须是 12 位数字，否则 404；`region` 为 `global` 或 `supported_regions` 之一，否则 422；`resource_type` 必须已注册且与 region 匹配（global 类型只能配 `global`），否则 422。
+- `account_id` 必须是 12 位数字，否则 404；`region` 为 `global` 或扫描 region 之一，否则 422；`resource_type` 必须已注册且与 region 匹配（global 类型只能配 `global`），否则 422。
 - 第三段以 `arn:` 开头时按 ARN 处理，ARN 中的 `/` 原样放在路径中（如 `/v1/resources/123456789012/eu-west-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a`）。资源不属于路径中的账号与 region（global 资源为 `global`）时返回 404。
 - `cursor` 与发出它的路径绑定，换到其他路径使用返回 400。
 
@@ -262,8 +262,8 @@ GET 接口的完整版，过滤条件放在 body 中：
 {"arns": ["arn:aws:ec2:eu-west-1:123456789012:instance/i-0abc123def4567890"], "wait_seconds": 20}
 ```
 
-- `arns`：1–100 个（重复的会被去重）。≤20 个时，能直达目标 endpoint 的在 API 进程内执行，其余由目标 region 的 worker 执行；>20 个全部转为异步（立即返回 202，各 ARN 状态为 `pending`）。
-- `wait_seconds`：默认 20。
+- `arns`：1–100 个（重复的会被去重）。每个 ARN 都由资源所在 region 的 worker 执行（global 资源为 us-east-1 的 worker）。
+- `wait_seconds`：默认 20；为 0 时立即返回 202，各 ARN 状态为 `pending`。
 
 响应 200（全部完成）/ 202（未在时限内完成或转异步）：
 
@@ -296,7 +296,6 @@ GET 接口的完整版，过滤条件放在 body 中：
 
 ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone、旧格式 ECS service ARN），服务端会根据已扫描的数据补全。
 
-如果 API 所在 region 无法直接访问目标 region 的服务 endpoint，该 ARN 会改由目标 region 的 worker 异步执行，耗时会更长，可能返回 202。
 
 注意：EC2 等服务的 API 是最终一致的。修改资源后立即刷新可能读到旧数据，建议修改完成后间隔几秒再调用。
 
@@ -346,7 +345,7 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 }
 ```
 
-`scopes[].status`：`succeeded | failed | auth_denied | skipped_no_endpoint | never`。
+`scopes[].status`：`succeeded | failed | auth_denied | never`。
 
 ### 3.10 `GET /v1/resource-types` 已注册的资源类型
 
@@ -354,12 +353,12 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 {
   "items": [
     {"resource_type": "AWS::EC2::Instance", "service": "ec2", "is_global": false, "depends_on": [], "enabled_regions": ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]},
-    {"resource_type": "AWS::IAM::Role", "service": "iam", "is_global": true, "depends_on": [], "enabled_regions": []}
+    {"resource_type": "AWS::IAM::Role", "service": "iam", "is_global": true, "depends_on": [], "enabled_regions": ["global"]}
   ]
 }
 ```
 
-`enabled_regions` 为空表示所需 endpoint 未配置，该类型当前不会被扫描。
+`enabled_regions`：regional 类型为全部扫描 region，global 类型为 `["global"]`。
 
 ### 3.11 健康检查
 
