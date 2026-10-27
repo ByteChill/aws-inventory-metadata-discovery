@@ -27,9 +27,9 @@
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "region is required when resource_type is set",
+    "message": "account_id is required",
     "request_id": "01JBX6Y7Z8A9B0C1D2E3F4G5H6",
-    "details": [{"loc": ["body", "scope", "region"], "msg": "field required"}]
+    "details": [{"loc": ["body", "scope"], "msg": "Value error, account_id is required"}]
   }
 }
 ```
@@ -106,10 +106,16 @@
 |---|---|
 | `account_id` | 该账号所有已启用受支持 region（含 global）的所有类型 |
 | `account_id` + `region` | 该 region 的所有类型；`region` 可为 `global` |
+| `account_id` + `resource_type` | 该类型在所有可扫描 region 中扫描：regional 类型取「账号已启用的 region ∩ `supported_regions`（部署了 worker 的 region）∩ 该类型 endpoint 可用的 region」，每个 region 一个 task；global 类型即 `global` |
 | `account_id` + `region` + `resource_type` | 该 region 的某一类型 |
 | `arn`（单独使用） | 单个资源；等价于 `POST /v1/resources/refresh` 只传一个 ARN |
 
-校验：有 `resource_type` 必须有 `region`；`arn` 不能与其他字段同时出现；`region` 必须在受支持列表中；`resource_type` 必须已注册且适用于该 region（global 类型只能配 `global`）。
+校验（不通过返回 422 `VALIDATION_ERROR`，不创建 job）：
+
+- `arn` 不能与其他字段同时出现；其余组合必须有 `account_id`。
+- `region` 必须是 `global` 或在 `supported_regions` 中；非 `global` 的 `region` 还必须是该账号已启用的 region（`account_region`，缓存过期时调用 `describe_regions` 刷新）。
+- `resource_type` 必须已注册；指定 `region` 时须适用于该 region（global 类型只能配 `global`）且所需 endpoint 已配置。
+- 只有 `resource_type` 没有 `region` 时，上述交集为空即返回 422（该类型对此账号不可扫描）。
 
 ### 2.3 ScanJob
 
@@ -146,12 +152,16 @@
     "AWS::EC2::Instance": {"status": "succeeded", "created": 1, "updated": 3, "deleted": 0, "unchanged": 120, "duration_ms": 2310},
     "AWS::ECS::Service": {"status": "failed", "error_code": "THROTTLED", "error_message": "Rate exceeded"}
   },
+  "error_code": null,
+  "error_message": null,
   "started_at": "2026-10-27T08:00:02Z",
   "finished_at": "2026-10-27T08:02:40Z"
 }
 ```
 
 `status`：`queued | running | retrying | succeeded | partial | failed | auth_denied | timed_out`。
+
+`error_code` / `error_message`：task 整体失败的原因（例如 `DISPATCH_FAILED`、`AUTH_DENIED`、超时），与某个类型无关；单个类型的错误在 `result` 中。
 
 ## 3. 接口
 
@@ -172,6 +182,22 @@
 | `limit` / `cursor` / `with_total` | | 见 §1.3 |
 
 响应 200：`Page[Resource]`。
+
+#### 路径形式
+
+按 scope 层级获取资源，路径中的段等价于对应的单值过滤条件；其余参数（`tag`、`name_prefix`、`changed_since`、`include_deleted`、`view`、`sort`、`order`、`limit`、`cursor`、`with_total`）与上表相同。
+
+| 路径 | 等价于 | 响应 |
+|---|---|---|
+| `GET /v1/resources/all` | 不带 scope 过滤的 `GET /v1/resources` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}` | `account_id=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}` | `account_id=…&region=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}/{resource_type}` | `account_id=…&region=…&resource_type=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}/{arn}` | `GET /v1/resources/by-arn?arn=…`（只接受 `include_deleted`） | `Resource`（full 视图） |
+
+- `account_id` 必须是 12 位数字，否则 404；`region` 为 `global` 或 `supported_regions` 之一，否则 422；`resource_type` 必须已注册且与 region 匹配（global 类型只能配 `global`），否则 422。
+- 第三段以 `arn:` 开头时按 ARN 处理，ARN 中的 `/` 原样放在路径中（如 `/v1/resources/123456789012/eu-west-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a`）。资源不属于路径中的账号与 region（global 资源为 `global`）时返回 404。
+- `cursor` 与发出它的路径绑定，换到其他路径使用返回 400。
 
 ### 3.2 `POST /v1/resources/search` 资源搜索
 
@@ -342,6 +368,12 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 
 两者不记录访问日志。
 
-### 3.12 预留
+### 3.12 内置 UI
+
+- `GET /ui/`：浏览资源、触发扫描并跟踪进度的静态页面（实现见 [spec 07 §9](specs/07-api-service.md#9-内置-uiui)），只调用本文档中的 `/v1` 接口。
+- `GET /`：重定向到 `/ui/`。
+- 不属于 API 契约，不出现在 OpenAPI 中；`API_UI_ENABLED=false` 时不提供。
+
+### 3.13 预留
 
 `/v1/history/*` 当前返回 501 `NOT_IMPLEMENTED`。设计见 [specs/09-reserved-extensions.md](specs/09-reserved-extensions.md)。

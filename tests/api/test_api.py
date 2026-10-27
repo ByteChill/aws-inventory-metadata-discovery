@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from inventory.api.app import create_app
+from inventory.db import AccountRegionRepository, JobRepository, scan_task
 from inventory.observability import ContextFilter
 from tests.api.conftest import app_settings, new_async_engine, without_request_id
 from tests.helpers import assert_matches_fixture, load_fixture
@@ -175,6 +178,35 @@ def test_by_arn(client: TestClient) -> None:
 
 
 @pytest.mark.usefixtures("seeded")
+def test_resource_path_forms(client: TestClient) -> None:
+    for case in load_fixture("api/resources.paths.cases.json"):
+        response = client.get(case["path"], params=case.get("params"))
+        body = response.json()
+        assert response.status_code == case["status"], case["path"]
+        if "ids" in case:
+            assert sorted(r["resource_id"] for r in body["items"]) == case["ids"], case["path"]
+        elif "id" in case:
+            assert body["resource_id"] == case["id"] and body["data"] is not None
+        else:
+            assert body["error"]["code"] == case["code"], case["path"]
+
+
+@pytest.mark.usefixtures("seeded")
+def test_resource_path_forms_page_with_cursor(client: TestClient) -> None:
+    first = client.get("/v1/resources/all", params={"limit": 2}).json()
+    second = client.get(
+        "/v1/resources/all", params={"limit": 2, "cursor": first["next_cursor"]}
+    ).json()
+    elsewhere = client.get(
+        "/v1/resources/123456789012", params={"limit": 2, "cursor": first["next_cursor"]}
+    )
+
+    ids = [r["resource_id"] for r in first["items"] + second["items"]]
+    assert sorted(ids) == ["ami-0x", "vpc-0a", "vpc-0b"] and second["next_cursor"] is None
+    assert elsewhere.status_code == 400  # a cursor is bound to the filters it was issued for
+
+
+@pytest.mark.usefixtures("seeded")
 def test_stats_paths_agree(client: TestClient) -> None:
     fast = client.get("/v1/resources/stats", params={"group_by": "account_id,resource_type"}).json()
     counted = client.get(
@@ -225,10 +257,77 @@ def test_scan_is_queued_and_deduplicated(client: TestClient) -> None:
     assert [j["job_id"] for j in listed["items"]] == [first.json()["job_id"]]
 
 
-@pytest.mark.parametrize("name", ["scan.invalid_region", "scan.type_without_region"])
+def test_task_failure_reason_is_exposed(client: TestClient, db: Any) -> None:
+    job_id = client.post(
+        "/v1/scans", json=load_fixture("api/scan.account_region.request.json")
+    ).json()["job_id"]
+    seed = load_fixture("api/scan.task_failed.seed.json")
+    with db.begin() as conn:
+        task_id = conn.execute(
+            select(scan_task.c.task_id).where(scan_task.c.job_id == job_id)
+        ).scalar_one()
+        JobRepository().finish_task(
+            conn,
+            task_id,
+            seed["status"],
+            error_code=seed["error_code"],
+            error_message=seed["error_message"],
+        )
+
+    (task,) = client.get(f"/v1/scans/{job_id}", params={"include_tasks": "true"}).json()["tasks"]
+    picked = {k: task[k] for k in ("status", "error_code", "error_message", "result")}
+    assert_matches_fixture(picked, "api/scan.task_failed.expected.json")
+
+
+@pytest.mark.parametrize("name", ["scan.invalid_region", "scan.missing_account"])
 def test_invalid_scopes(client: TestClient, name: str) -> None:
     response = client.post("/v1/scans", json=load_fixture(f"api/{name}.request.json"))
     assert response.status_code == 422
+
+
+def seed_enabled_regions(db: Any, name: str) -> None:
+    seed = load_fixture(f"api/{name}.seed.json")
+    with db.begin() as conn:
+        AccountRegionRepository().replace(
+            conn,
+            seed["account_id"],
+            enabled=seed["enabled"],
+            supported=seed["supported"],
+            checked_at=datetime.now(UTC),
+        )
+
+
+def test_type_scope_without_region_uses_enabled_regions(client: TestClient, db: Any) -> None:
+    seed_enabled_regions(db, "scan.unscannable")  # eu-west-2 is supported but not enabled
+
+    response = client.post(
+        "/v1/scans", json=load_fixture("api/scan.type_without_region.request.json")
+    )
+    job = client.get(
+        f"/v1/scans/{response.json()['job_id']}", params={"include_tasks": "true"}
+    ).json()
+
+    tasks = sorted(
+        ({"region": t["region"], "resource_types": t["resource_types"]} for t in job["tasks"]),
+        key=lambda t: t["region"],
+    )
+    assert_matches_fixture(
+        {"status_code": response.status_code, "tasks": tasks},
+        "api/scan.type_without_region.expected.json",
+    )
+
+
+def test_unscannable_scopes_are_rejected_without_a_job(client: TestClient, db: Any) -> None:
+    seed_enabled_regions(db, "scan.unscannable")
+
+    messages = []
+    for body in load_fixture("api/scan.unscannable.request.json"):
+        response = client.post("/v1/scans", json=body)
+        assert response.status_code == 422, body
+        messages.append(response.json()["error"]["message"])
+
+    assert_matches_fixture(messages, "api/scan.unscannable.expected.json")
+    assert client.get("/v1/scans").json()["items"] == []
 
 
 def test_unknown_job(client: TestClient) -> None:
@@ -335,10 +434,8 @@ def test_cursor_with_wrong_keys_is_a_400(client: TestClient) -> None:
 
 
 def test_scope_validation_message(client: TestClient) -> None:
-    response = client.post(
-        "/v1/scans", json=load_fixture("api/scan.type_without_region.request.json")
-    )
-    expected = load_fixture("api/scan.type_without_region.response.json")["error"]
+    response = client.post("/v1/scans", json=load_fixture("api/scan.missing_account.request.json"))
+    expected = load_fixture("api/scan.missing_account.response.json")["error"]
 
     body = response.json()["error"]
     assert (body["code"], body["message"]) == (expected["code"], expected["message"])
@@ -346,10 +443,6 @@ def test_scope_validation_message(client: TestClient) -> None:
 
 
 def test_scan_without_work_finishes_within_the_wait(client: TestClient, db: Any) -> None:
-    from datetime import UTC, datetime
-
-    from inventory.db import AccountRegionRepository
-
     with db.begin() as conn:  # the account has none of the supported regions enabled
         AccountRegionRepository().replace(
             conn,

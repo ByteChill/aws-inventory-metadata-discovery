@@ -1,0 +1,6 @@
+{
+  "error_code": "DISPATCH_FAILED",
+  "error_message": "no ondemand queue for eu-west-1",
+  "result": {},
+  "status": "failed"
+}

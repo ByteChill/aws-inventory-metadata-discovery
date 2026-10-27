@@ -97,6 +97,8 @@ class ScanTaskOut(BaseModel):
     status: TaskStatus
     attempts: int
     result: dict[str, Any]
+    error_code: str | None = None
+    error_message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 

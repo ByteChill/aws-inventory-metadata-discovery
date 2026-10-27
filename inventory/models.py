@@ -337,8 +337,6 @@ class ScanScope(_Contract):
             return self
         if not self.account_id:
             raise ValueError("account_id is required")
-        if self.resource_type and not self.region:
-            raise ValueError("region is required when resource_type is set")
         return self
 
     def as_json(self) -> dict[str, Any]:

@@ -1,0 +1,5 @@
+{
+  "account_id": "123456789012",
+  "enabled": ["ap-east-1", "eu-west-1", "us-east-1"],
+  "supported": ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
+}

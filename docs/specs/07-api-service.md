@@ -16,8 +16,9 @@ inventory/api/app.py          # create_app(settings)、lifespan、依赖注入�
 inventory/api/middleware.py   # RequestContextMiddleware
 inventory/api/errors.py       # 异常处理器、ErrorResponse
 inventory/api/schemas.py      # 与 api.md 一一对应的 pydantic 模型
-inventory/api/resources.py    # /v1/resources*、/v1/resource-types、/v1/accounts/{id}/coverage
+inventory/api/resources.py    # /v1/resources*（含路径形式 /all、/{account}/{region}/{type|arn}）、/v1/resource-types、/v1/accounts/{id}/coverage
 inventory/api/scans.py        # /v1/scans*、/v1/resources/refresh
+inventory/api/ui/             # 内置 UI 静态页面（§9）：index.html、app.js、style.css
 inventory/transport.py        # RefreshExecutor 接口 + InlineRefreshExecutor
 tests/api/...  tests/fixtures/api/...
 ```
@@ -39,6 +40,7 @@ tests/api/...  tests/fixtures/api/...
 | `refresh_timeout_seconds` | 15 | 单个 ARN |
 | `tracing_enabled` | false | |
 | `otlp_endpoint` | `http://localhost:4317` | ADOT sidecar |
+| `ui_enabled` | true | 是否挂载 `/ui`（§9） |
 
 ## 2. 应用结构
 
@@ -124,9 +126,10 @@ API 进程在执行过程中退出时，未完成的 task 由 planner 的 `maint
 ## 6. 触发扫描（`/v1/scans`）
 
 1. 校验 scope（api.md §2.2）。`scope.arn` 转到 §5 的刷新流程，响应格式为 ScanJob。
-2. `create_job(trigger=api, request_id=上下文中的 request_id, deadline_at=now+60min)`；去重时直接返回已有 job，`deduplicated=true`。
-3. 新 job：`Scheduler.expand` + `submit(queue=ondemand)`。`expand` 可能需要调用 `describe_regions`（账号级 scope 且缓存过期时），这一步在线程中执行。
-4. `wait_seconds > 0` 时轮询 job 状态直到终态或超时。
+2. `Scheduler.validate(scope)`，再 `Scheduler.expand(scope, "ondemand")`（在线程中执行；`account_region` 缓存过期时会调用 `describe_regions`）。`BadRequestError` 返回 422，此时不创建 job；broker / AWS 错误按错误类型返回（502 / 503），同样不创建 job。
+3. `create_job(trigger=api, request_id=上下文中的 request_id, deadline_at=now+60min)`；去重时直接返回已有 job，`deduplicated=true`，丢弃第 2 步的展开结果。
+4. 新 job：`submit(job, tasks)`。`submit` 本身出错（如写库失败）时 job 置为 `failed`，不阻塞该 scope。
+5. `wait_seconds > 0` 时轮询 job 状态直到终态或超时。
 
 ## 7. 查询
 
@@ -134,11 +137,53 @@ API 进程在执行过程中退出时，未完成的 task 由 planner 的 `maint
 - `tag` 参数：在第一个 `=` 处分割；没有 `=` 表示只要求存在该 key。
 - `stats`：没有 tag / name / changed_since 过滤且 `include_deleted=false` 时读 `scope_state.resource_count`（`status=succeeded` 的行）；否则执行 `COUNT ... GROUP BY`。
 - `by-arn`：返回 full 视图，并附带 `verified_at`（对应 scope 的 `last_success_at`）。
+- 路径形式（api.md §3.1）：与 `GET /v1/resources` 共用查询参数依赖 `list_options`，路径段只换成对应的单值过滤，cursor 指纹因此天然与路径绑定。`{account_id}` 与 `{arn}` 用 Starlette 自定义 convertor（`[0-9]{12}`、`arn:.+`）匹配，路由定义在固定路径（`stats`、`by-arn` 等）之后，互不遮挡；ARN 路由在类型路由之前。ARN 形式复用 `by-arn` 的查找，并要求结果的 `(account_id, region)` 与路径一致。
 - `coverage`：合并 `account_region` 与 `scope_state`；对已启用 region 中没有 `scope_state` 记录的可用类型返回 `status=never`。
 
 ## 8. OpenAPI 快照
 
 测试 `test_openapi_snapshot`：把 `app.openapi()` 与 `tests/fixtures/api/openapi.json` 比较。接口变化时用 `UPDATE_FIXTURES=1` 更新快照，并在同一提交中修改 `docs/api.md`。
+
+## 9. 内置 UI（`/ui`）
+
+给开发与运维在内网浏览器里查看资源、触发扫描并跟踪进度的简单页面，不替代 API，也不承载业务逻辑。
+
+### 9.1 实现
+
+- 静态文件放在 `inventory/api/ui/`（`index.html`、`app.js`、`style.css`），由 `StaticFiles(html=True)` 挂载到 `/ui`；`GET /` 与 `GET /ui` 用相对地址重定向到 `/ui/`（Starlette 自带的补斜杠重定向会用 Host 头拼绝对地址）。`ui_enabled=false` 时都不注册。
+- 原生 HTML + JS，无构建步骤、无第三方库、不访问 CDN（API 部署在私有 VPC）。
+- 只调用 api.md 中已有的 `/v1` 接口，不为 UI 新增后端接口；新增或修改 UI 用到的接口时同样遵守 §8。
+- 不进入 OpenAPI（挂载本身不会出现在 OpenAPI 中，重定向路由为 `include_in_schema=False`）。
+- 认证与 API 一致：依赖内部 ALB 与网络边界，没有单独的登录。
+
+### 9.2 安全
+
+- 资源名、tag、`data` 来自被扫描账号，视为不可信：渲染一律用 `textContent` / `createElement`，不用 `innerHTML` 拼接数据。
+- 静态文件响应头：`Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`，以及 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-cache`（靠 ETag 重新验证，发布后不会继续使用旧的 `app.js`）。
+- 不使用浏览器存储保存数据。
+
+### 9.3 页面（hash 路由）
+
+| 路由 | 内容 | 调用的接口 |
+|---|---|---|
+| `#/resources` | 过滤（account、region、type、name 前缀、tag、含已删除）、结果表、总数、"加载更多"（cursor）；点击行打开详情 | `GET /v1/resources`（`with_total=true`）、`GET /v1/resource-types`（下拉选项） |
+| 资源详情（同页面板） | 主要字段与 `data` JSON；"从 AWS 刷新"；"扫描该账号/region/类型"跳到扫描表单并预填 | `GET /v1/resources/by-arn`、`POST /v1/resources/refresh`（`wait_seconds=20`） |
+| `#/overview` | 按类型、按 region 的数量统计；已注册类型及其可扫描 region | `GET /v1/resources/stats`、`GET /v1/resource-types` |
+| `#/scans` | 触发表单（见 9.4）；最近的 job 列表（按状态、trigger、账号过滤，加载更多） | `POST /v1/scans`、`GET /v1/scans` |
+| `#/scans/<job_id>` | job 状态、scope、统计、进度、错误；task 列表（含 task 的 `error_code`）及每个类型的结果，仅当 `tasks_total ≤ 200` 时获取（定时扫描有上千个 task，只显示数量）；非终态时每 2 秒轮询，离开页面即停止；"按相同 scope 重新扫描" | `GET /v1/scans/{job_id}`（小 job 加 `include_tasks=true`）、`POST /v1/scans` / `POST /v1/resources/refresh` |
+| `#/coverage/<account_id>` | 账号各 region × 类型的扫描状态、数量、最近成功时间与错误；每行"扫描"按钮 | `GET /v1/accounts/{account_id}/coverage`、`POST /v1/scans` |
+
+### 9.4 扫描触发流程
+
+1. 选择粒度：账号 / 账号 + region / 账号 + 类型（region 可选，留空表示所有可扫描 region）/ 单个 ARN。region、类型下拉来自 `/v1/resource-types`（类型随所选 region 过滤，`global` region 只列 global 类型）。
+2. 提交 `POST /v1/scans`（`wait_seconds` 默认 0，可填 0–25）。客户端只做必填检查，其余校验以服务端为准，422 时显示服务端消息。
+3. 成功后跳转到 `#/scans/<job_id>`；`deduplicated=true` 时提示"已有相同 scope 的 job 在运行，显示的是该 job"。
+4. 详情页轮询直到 `succeeded | partial | failed | timed_out`。
+5. 入口：扫描页表单、资源详情、覆盖情况页每一行、job 详情的"重新扫描"。
+
+### 9.5 错误显示
+
+所有失败请求显示 HTTP 状态、`error.code`、`error.message` 与 `request_id`（取自响应体或 `X-Request-ID` 头），方便按 request_id 检索日志。
 
 ## 测试要求
 
@@ -148,11 +193,13 @@ API 进程在执行过程中退出时，未完成的 task 由 planner 的 `maint
 | 访问日志字段完整；healthz 不输出日志 | caplog |
 | 错误格式：422 / 404 / 500 / 501 | `api/errors.*.response.json` |
 | 资源列表：每种过滤、排序、分页、`view`、`with_total` | PG + `db/resources.seed.json`；请求与期望响应放在 `api/resources.*.json` |
+| 资源路径形式：各层级结果、ARN 归属不符 404、非法 region / 类型 422、cursor 与路径绑定 | PG；`api/resources.paths.cases.json` |
 | 搜索：`data_jsonpath` 正常与超时 | PG |
 | stats 两条路径结果一致 | PG |
-| 扫描：各种 scope 校验、去重、`wait_seconds` 内完成返回 200、超时返回 202 | PG + moto SQS + 假 worker（测试中直接更新 task 状态） |
+| 扫描：各种 scope 校验（类型不带 region 时展开到已启用 ∩ 受支持 region；不可扫描的 scope 422 且不建 job，`api/scan.unscannable.*.json`）、去重、`wait_seconds` 内完成返回 200、超时返回 202；task 的 `error_code` / `error_message` 返回（`api/scan.task_failed.*.json`） | PG + moto SQS + 假 worker（测试中直接更新 task 状态） |
 | 刷新：updated / unchanged / deleted / not_found / unsupported_type / ACCOUNT_UNRESOLVED / ACCOUNT_AMBIGUOUS；缺少 endpoint 时走队列；超过 20 个转异步 | PG + moto（EC2）+ 假 broker transport；`api/refresh.*.json` |
 | OpenAPI 快照 | `api/openapi.json` |
+| UI：`/ui/` 返回页面与 §9.2 的安全头；静态资源可访问；`/`、`/ui` 相对重定向；缺失文件为标准 404；`ui_enabled=false` 时 404；`app.js` 引用的 `/v1` 路径都存在于 OpenAPI；不使用 HTML 注入接口、链接只由固定前缀构造 | `api/ui.expected.json`、`api/ui.endpoints.expected.json` |
 
 ## 验收标准
 
@@ -181,3 +228,15 @@ API 进程在执行过程中退出时，未完成的 task 由 planner 的 `maint
 - stats 快速路径只统计 `scope_state.status = 'succeeded'` 的行。`GET /v1/scans` 列表返回已存储的 stats（不逐个实时汇总）；`GET /v1/scans/{id}` 才实时汇总运行中的 job。
 - 输入上限：搜索的各列表 / tags / tag_keys / name_prefix 有长度限制，ARN 最长 2048；`status`、`trigger` 参数为枚举。
 - 已知限制：日志中暂无 `xray_trace_id` 字段（OTel span 在请求中间件内部才开始），未启用 SQLAlchemy 埋点；旧格式 ECS service ARN 的补全（`LIKE '%/name'`）不走索引，但只在这类 ARN 出现时执行。
+
+### 第三轮修订（内置 UI）
+
+- 新增 §9 内置 UI 与 `ApiSettings.ui_enabled`。
+- `ScanTask` 增加 `error_code` / `error_message`（task 整体失败的原因，例如 `DISPATCH_FAILED`），此前只存在于表中，API 与 UI 看不到 task 为什么失败；OpenAPI 快照同步更新。
+- `.env.example` 中的 JSON 值改为单引号包裹：README 要求的 `set -a; source .env` 会去掉未加引号的双引号，导致 `INVENTORY_SUPPORTED_REGIONS` / `INVENTORY_CELLS` 解析失败。
+
+### 第四轮修订（类型级 scope 不再要求 region）
+
+- `POST /v1/scans` 先校验并展开 scope，再创建 job：账号相关的不支持（region 未对该账号启用、类型在任何可扫描 region 都不可用）直接返回 422，不再产生一个 `failed` 的 job。
+- UI 的"账号 + 类型"粒度中 region 改为可选。
+- 新增资源的路径形式：`/v1/resources/all`、`/{account_id}`、`/{account_id}/{region}`、`/{account_id}/{region}/{resource_type}`、`/{account_id}/{region}/{arn}`。

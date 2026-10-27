@@ -102,31 +102,56 @@ class Scheduler:
 
     # ------------------------------------------------------------------ expansion
     def expand(self, scope: ScanScope, queue: QueueKind) -> list[NewTask]:
+        """Tasks for an account-level scope; raises BadRequestError for what cannot be scanned."""
         if scope.all or scope.arn or not scope.account_id:
             raise BadRequestError("only account-level scopes can be expanded into tasks")
+        self.validate(scope)
         account = scope.account_id
-        if scope.region is None:
-            regions = self.enabled_regions(account)
-            tasks = [NewTask(account, region, queue) for region in regions]
+        if scope.region is None and scope.resource_type is None:
+            tasks = [NewTask(account, region, queue) for region in self.enabled_regions(account)]
             available, _ = self.registry.for_region(GLOBAL_REGION, self.resolver)
             if available:
                 tasks.append(NewTask(account, GLOBAL_REGION, queue))
             return tasks
-        self.validate_region(scope.region)
-        if scope.resource_type is None:
-            return [NewTask(account, scope.region, queue)]
-        self.validate_type(scope.resource_type, scope.region)
-        return [NewTask(account, scope.region, queue, resource_types=[scope.resource_type])]
+        rtype = scope.resource_type
+        if scope.region is not None:
+            regions = [scope.region]
+            if scope.region != GLOBAL_REGION and scope.region not in self.enabled_regions(account):
+                raise BadRequestError(f"region {scope.region} is not enabled for account {account}")
+        elif rtype is not None and self.registry.get(rtype).is_global:
+            regions = [GLOBAL_REGION]
+        elif rtype is not None:
+            regions = [r for r in self.enabled_regions(account) if self._available(rtype, r)]
+            if not regions:
+                raise BadRequestError(
+                    f"{rtype} is not available in any region enabled for account {account}"
+                )
+        types = [rtype] if rtype else None
+        return [NewTask(account, region, queue, resource_types=types) for region in regions]
 
-    def validate_region(self, region: str) -> None:
-        if region != GLOBAL_REGION and region not in self.settings.supported_regions:
+    def validate(self, scope: ScanScope) -> None:
+        """Checks that need no account data: supported region, known type, endpoints."""
+        region, rtype = scope.region, scope.resource_type
+        if region not in (None, GLOBAL_REGION, *self.settings.supported_regions):
             raise BadRequestError(f"region {region} is not supported")
+        if rtype is None:
+            return
+        if not self.registry.has(rtype):
+            raise BadRequestError(f"unknown resource_type {rtype}")
+        cls = self.registry.get(rtype)
+        if region is None:
+            candidates = [GLOBAL_REGION] if cls.is_global else self.settings.supported_regions
+            if not any(self._available(rtype, r) for r in candidates):
+                raise BadRequestError(f"{rtype} is not available in any supported region")
+            return
+        if cls.is_global != (region == GLOBAL_REGION):
+            raise BadRequestError(f"{rtype} cannot be scanned in region {region}")
+        if not self._available(rtype, region):
+            raise BadRequestError(f"{rtype} is not available in region {region} (no endpoint)")
 
-    def validate_type(self, resource_type: str, region: str) -> None:
-        if not self.registry.has(resource_type):
-            raise BadRequestError(f"unknown resource_type {resource_type}")
-        if self.registry.get(resource_type).is_global != (region == GLOBAL_REGION):
-            raise BadRequestError(f"{resource_type} cannot be scanned in region {region}")
+    def _available(self, resource_type: str, region: str) -> bool:
+        endpoints = self.registry.get(resource_type).endpoints()
+        return all(self.resolver.has_endpoint(s, region) for s in endpoints)
 
     # ------------------------------------------------------------------ submit
     def submit(self, job: ScanJob, tasks: Sequence[NewTask]) -> SubmitResult:

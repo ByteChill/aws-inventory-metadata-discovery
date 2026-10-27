@@ -101,11 +101,14 @@ class Scheduler:
 |---|---|
 | `all` | 由 planner 按账号批次调用 `expand(account_id=...)`，不直接展开 |
 | `account_id` | 每个启用的受支持 region 一个，再加一个 `global`（若有可用的 global 类型） |
-| `account_id + region` | 一个 |
-| `account_id + region + resource_type` | 一个，`resource_types=[type]` |
+| `account_id + region` | 一个；非 `global` 的 region 必须在 `enabled_regions(account)` 中 |
+| `account_id + resource_type` | regional 类型：`enabled_regions(account)` 中该类型 endpoint 可用的每个 region 一个，`resource_types=[type]`，结果为空时抛 `BadRequestError`；global 类型：一个 `global` |
+| `account_id + region + resource_type` | 一个，`resource_types=[type]`；region 规则同上，且该类型在该 region 的 endpoint 必须可用 |
 | `arn` | 不经队列，由 API 直接处理（spec 07） |
 
 task 的 `queue`：定时任务为 `scheduled`，API 为 `ondemand`。
+
+`validate(scope)` 只做不依赖账号的检查（region 受支持、类型已注册、global/regional 匹配、endpoint 可用），API 在调用 `expand` 前先调用它；依赖账号已启用 region 的检查在 `expand` 中进行。两者都抛 `BadRequestError`。
 
 ### 3.3 `submit`
 
@@ -225,3 +228,9 @@ class AccountDirectoryClient:
 - 状态机：`CreateJob` 失败进入 `Fail`；Map 失败 → `MarkDispatchedWithError`（把错误写入 `scan_job.error`，job 最终为 `partial`）→ 继续等待；`CheckProgress` 失败回到 `WaitForWorkers`（仍受 deadline 约束）。
 - `finalize` 带 error 且未到 deadline 时只记录错误、不超时 task（避免一次瞬时故障丢掉整轮工作），之后由 `maintenance` 收尾；`check_progress` 与 `maintenance` 都会调用 `refresh_job_status` 作为兜底。`maintenance` 也处理过期的定时 job（状态机异常退出时）。
 - `task_stale_minutes` 默认 10（心跳 120 秒，5 次未更新即视为失联）；`PlannerSettings.account_directory_function_name` 为必填。
+
+### 第三轮修订（类型级 scope 不再要求 region）
+
+- `account_id + resource_type` 合法：regional 类型展开到「账号已启用 region ∩ `supported_regions` ∩ 该类型 endpoint 可用的 region」，交集为空时报错；global 类型展开为 `global`。
+- 指定的非 `global` region 必须对该账号已启用；指定类型时该类型在该 region 的 endpoint 必须可用（之前只在 worker 中记为 `skipped_no_endpoint`）。
+- 新增 `Scheduler.validate(scope)`，替代 `validate_region` / `validate_type`。

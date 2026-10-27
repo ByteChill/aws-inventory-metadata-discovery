@@ -160,6 +160,22 @@ def test_expand_type_scope(db: Engine) -> None:
     ]
 
 
+def test_expand_type_scope_without_region(db: Engine) -> None:
+    scheduler = make_runtime(db).scheduler
+    tasks = scheduler.expand(
+        ScanScope(account_id="100000000001", resource_type="AWS::EC2::VPC"), "ondemand"
+    )
+
+    assert [(t.region, t.resource_types) for t in tasks] == [
+        (r, ["AWS::EC2::VPC"]) for r in scheduler.enabled_regions("100000000001")
+    ]
+    # the test cells configure no iam endpoint, so the global type cannot be scanned anywhere
+    with pytest.raises(BadRequestError, match="not available"):
+        scheduler.expand(
+            ScanScope(account_id="100000000001", resource_type="AWS::IAM::Role"), "ondemand"
+        )
+
+
 class FailingDispatcher:
     def dispatch(self, messages: Any, delay_seconds: int = 0) -> DispatchResult:
         return DispatchResult(failed=[(m.task_id, "QueueDoesNotExist") for m, _ in messages])

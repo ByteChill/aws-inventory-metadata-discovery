@@ -1,0 +1,7 @@
+[
+  {"scope": {"account_id": "123456789012", "region": "eu-west-2"}},
+  {"scope": {"account_id": "123456789012", "region": "eu-west-2", "resource_type": "AWS::EC2::VPC"}},
+  {"scope": {"account_id": "123456789012", "region": "sa-east-1", "resource_type": "AWS::EC2::VPC"}},
+  {"scope": {"account_id": "123456789012", "region": "global", "resource_type": "AWS::EC2::VPC"}},
+  {"scope": {"account_id": "123456789012", "resource_type": "AWS::Nope::Thing"}}
+]

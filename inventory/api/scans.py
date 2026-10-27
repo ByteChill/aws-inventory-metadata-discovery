@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 import anyio
 from anyio.to_thread import run_sync
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import ValidationError
 from sqlalchemy.engine import RowMapping
@@ -28,7 +29,13 @@ from inventory.api.schemas import (
 from inventory.api.state import ApiState, get_state
 from inventory.db import JobRepository
 from inventory.engine import classify
-from inventory.errors import BadRequestError, NotFoundError, NotImplementedFeatureError
+from inventory.errors import (
+    BadRequestError,
+    NotFoundError,
+    NotImplementedFeatureError,
+    ThrottledError,
+    UpstreamError,
+)
 from inventory.models import TERMINAL_JOB_STATUSES, JobStatus, ScanJob, ScanScope, Trigger, utcnow
 from inventory.observability import get_context
 
@@ -89,13 +96,16 @@ async def create_scan(state: State, body: ScanRequest, response: Response) -> Sc
         ) from None
 
     scheduler = state.runtime.scheduler
+    # Expand before creating the job so that a scope this account cannot scan is a 422, not a
+    # failed job. It may call the broker (enabled regions); its errors map to 502/503.
     try:
-        if scope.region:
-            scheduler.validate_region(scope.region)
-            if scope.resource_type:
-                scheduler.validate_type(scope.resource_type, scope.region)
+        tasks = await run_sync(scheduler.expand, scope, "ondemand")
     except BadRequestError as exc:
         raise ValidationFailedError(exc.message) from None
+    except (ClientError, BotoCoreError) as exc:  # describe_regions
+        error = classify(exc)
+        failure = ThrottledError if error.code == "THROTTLED" else UpstreamError
+        raise failure(f"{error.code}: {error.message}", retryable=error.retryable) from exc
 
     def create() -> tuple[ScanJob, bool]:
         now = utcnow()
@@ -110,10 +120,9 @@ async def create_scan(state: State, body: ScanRequest, response: Response) -> Sc
             )
 
     def start(job: ScanJob) -> None:
-        # Expansion can call the broker/AWS (enabled regions); a failure fails this job
-        # instead of leaving an empty "queued" job that blocks the scope until its deadline.
+        # a failure fails this job instead of leaving a "queued" job that blocks the scope
         try:
-            scheduler.submit(job, scheduler.expand(scope, "ondemand"))
+            scheduler.submit(job, tasks)
         except Exception as exc:
             error = classify(exc)
             log.warning("scan could not be started", extra={"error_code": error.code})

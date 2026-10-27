@@ -58,7 +58,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 | `inventory/transport.py` | `Dispatcher` / `CredentialProvider` / `ResultSink` / `ChangeSink` / `RefreshExecutor` 接口与方案 A 实现 |
 | `inventory/collectors/<service>.py` | 每个 AWS 服务一个文件 |
 | `inventory/broker/` | broker v2 内部模块 |
-| `inventory/api/` | FastAPI 应用：`app.py`（工厂）、`middleware.py`、`errors.py`、`schemas.py`、`queries.py`（异步查询）、`refresh.py`、`state.py`、`resources.py`、`scans.py` |
+| `inventory/api/` | FastAPI 应用：`app.py`（工厂）、`middleware.py`、`errors.py`、`schemas.py`、`queries.py`（异步查询）、`refresh.py`、`state.py`、`resources.py`、`scans.py`；`ui/` 为内置静态页面（原生 JS，只调用 `/v1`，数据一律用 `textContent` 渲染） |
 | `inventory/handlers/` | 部署入口，只做组装与参数转换，**不写业务逻辑** |
 
 单个模块超过约 800 行时再拆分，拆分前先在对应 spec 中更新文件清单。

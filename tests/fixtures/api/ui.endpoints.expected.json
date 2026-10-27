@@ -1,0 +1,10 @@
+[
+  "/v1/accounts/{}/coverage",
+  "/v1/resource-types",
+  "/v1/resources",
+  "/v1/resources/by-arn",
+  "/v1/resources/refresh",
+  "/v1/resources/stats",
+  "/v1/scans",
+  "/v1/scans/{}"
+]

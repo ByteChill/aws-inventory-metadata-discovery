@@ -88,6 +88,10 @@ uv run uvicorn --factory inventory.api.app:create_app --reload --port 8080    # 
 uv run python -m inventory.handlers.worker                   # worker（使用 .env 中的 WORKER_REGION）
 ```
 
+API 启动后浏览器打开 <http://localhost:8080/ui/>：查看资源与统计、触发扫描并跟踪进度、查看账号覆盖情况（[spec 07 §9](docs/specs/07-api-service.md#9-内置-uiui)）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
+
+macOS 的"隔空播放接收器"默认占用 5000 端口：可在系统设置中关闭，或运行 `uv run moto_server -p 5001` 并把 `.env` 中的 `localhost:5000` 改为 `localhost:5001`。
+
 ## 开发流程
 
 ### 分块实现

@@ -1,0 +1,15 @@
+[
+  {"path": "/v1/resources/all", "status": 200, "ids": ["ami-0x", "vpc-0a", "vpc-0b"]},
+  {"path": "/v1/resources/123456789012", "status": 200, "ids": ["vpc-0a", "vpc-0b"]},
+  {"path": "/v1/resources/123456789012/eu-west-1", "status": 200, "ids": ["vpc-0a", "vpc-0b"]},
+  {"path": "/v1/resources/123456789012/us-east-1", "status": 200, "ids": []},
+  {"path": "/v1/resources/123456789012/eu-west-1/AWS::EC2::VPC", "params": {"tag": "Env=prod"}, "status": 200, "ids": ["vpc-0a"]},
+  {"path": "/v1/resources/210987654321/us-east-1/AWS::EC2::Image", "status": 200, "ids": ["ami-0x"]},
+  {"path": "/v1/resources/123456789012/eu-west-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a", "status": 200, "id": "vpc-0a"},
+  {"path": "/v1/resources/123456789012/us-east-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a", "status": 404, "code": "NOT_FOUND"},
+  {"path": "/v1/resources/210987654321/eu-west-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a", "status": 404, "code": "NOT_FOUND"},
+  {"path": "/v1/resources/123456789012/sa-east-1", "status": 422, "code": "VALIDATION_ERROR"},
+  {"path": "/v1/resources/123456789012/global/AWS::EC2::VPC", "status": 422, "code": "VALIDATION_ERROR"},
+  {"path": "/v1/resources/123456789012/eu-west-1/AWS::Nope::Thing", "status": 422, "code": "VALIDATION_ERROR"},
+  {"path": "/v1/resources/12345", "status": 404, "code": "NOT_FOUND"}
+]

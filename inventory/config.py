@@ -159,6 +159,7 @@ class ApiSettings(BaseSettings):
     refresh_job_deadline_minutes: int = 5
     tracing_enabled: bool = False
     otlp_endpoint: str = "http://localhost:4317"
+    ui_enabled: bool = True
 
 
 @functools.cache
