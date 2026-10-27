@@ -1,0 +1,30 @@
+{
+  "buckets": [
+    {
+      "name": "inventory-test-logs",
+      "region": "ap-east-1",
+      "tags": {
+        "Env": "prod"
+      },
+      "versioning": true,
+      "encryption": true
+    },
+    {
+      "name": "inventory-test-plain",
+      "region": "ap-east-1",
+      "tags": {},
+      "versioning": false,
+      "encryption": false
+    },
+    {
+      "name": "inventory-test-elsewhere",
+      "region": "eu-west-1",
+      "tags": {},
+      "versioning": false,
+      "encryption": false
+    }
+  ],
+  "missing_ids": {
+    "AWS::S3::Bucket": "inventory-test-does-not-exist"
+  }
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "web",
+    "relation_keys": [
+      "family"
+    ],
+    "tags": {
+      "App": "web"
+    }
+  },
+  {
+    "name": "web",
+    "relation_keys": [
+      "family"
+    ],
+    "tags": {
+      "App": "web"
+    }
+  },
+  {
+    "name": "worker",
+    "relation_keys": [
+      "family"
+    ],
+    "tags": {
+      "seeded": "true"
+    }
+  }
+]

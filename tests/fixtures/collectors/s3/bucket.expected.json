@@ -1,0 +1,14 @@
+[
+  {
+    "name": "inventory-test-logs",
+    "relation_keys": [],
+    "tags": {
+      "Env": "prod"
+    }
+  },
+  {
+    "name": "inventory-test-plain",
+    "relation_keys": [],
+    "tags": {}
+  }
+]

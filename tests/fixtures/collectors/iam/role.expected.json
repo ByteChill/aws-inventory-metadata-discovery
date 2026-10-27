@@ -1,0 +1,12 @@
+[
+  {
+    "name": "app-role",
+    "relation_keys": [
+      "attached_policy_arns",
+      "instance_profile_arns"
+    ],
+    "tags": {
+      "App": "web"
+    }
+  }
+]

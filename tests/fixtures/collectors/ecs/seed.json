@@ -1,0 +1,67 @@
+{
+  "clusters": [
+    {
+      "name": "prod",
+      "tags": {
+        "Env": "prod"
+      }
+    },
+    {
+      "name": "dev",
+      "tags": {}
+    }
+  ],
+  "task_definitions": [
+    {
+      "family": "web",
+      "image": "nginx:1.27",
+      "tags": {
+        "App": "web"
+      }
+    },
+    {
+      "family": "web",
+      "image": "nginx:1.28",
+      "tags": {
+        "App": "web"
+      }
+    },
+    {
+      "family": "worker",
+      "image": "busybox",
+      "tags": {}
+    },
+    {
+      "family": "unused",
+      "image": "busybox",
+      "tags": {}
+    }
+  ],
+  "services": [
+    {
+      "cluster": "prod",
+      "name": "web",
+      "task_definition": "web:2",
+      "tags": {
+        "Team": "a"
+      }
+    },
+    {
+      "cluster": "dev",
+      "name": "web",
+      "task_definition": "web:1",
+      "tags": {}
+    },
+    {
+      "cluster": "prod",
+      "name": "worker",
+      "task_definition": "worker:1",
+      "tags": {}
+    }
+  ],
+  "missing_ids": {
+    "AWS::ECS::Cluster": "nope",
+    "AWS::ECS::Service": "prod/nope",
+    "AWS::ECS::TaskDefinition": "web:99"
+  }
+}

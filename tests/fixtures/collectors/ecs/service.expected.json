@@ -1,0 +1,32 @@
+[
+  {
+    "name": "web",
+    "relation_keys": [
+      "cluster_arn",
+      "task_definition_arns"
+    ],
+    "tags": {
+      "seeded": "true"
+    }
+  },
+  {
+    "name": "web",
+    "relation_keys": [
+      "cluster_arn",
+      "task_definition_arns"
+    ],
+    "tags": {
+      "Team": "a"
+    }
+  },
+  {
+    "name": "worker",
+    "relation_keys": [
+      "cluster_arn",
+      "task_definition_arns"
+    ],
+    "tags": {
+      "seeded": "true"
+    }
+  }
+]
