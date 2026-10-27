@@ -1,0 +1,6 @@
+{
+  "status": "error",
+  "code": "ADFS_UNAVAILABLE",
+  "message": "ADFS returned HTTP 503",
+  "retryable": true
+}

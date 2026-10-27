@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_r1" Version="2.0" IssueInstant="2026-10-27T08:00:00.000Z" Destination="https://signin.aws.amazon.com/saml">
+  <Issuer xmlns="urn:oasis:names:tc:SAML:2.0:assertion">http://adfs.example.invalid/adfs/services/trust</Issuer>
+  <samlp:Status>
+    <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+  </samlp:Status>
+  <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a1" IssueInstant="2026-10-27T08:00:00.000Z" Version="2.0">
+    <saml:Issuer>http://adfs.example.invalid/adfs/services/trust</saml:Issuer>
+    <saml:Subject>
+      <saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">svc-inventory</saml:NameID>
+      <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+        <saml:SubjectConfirmationData NotOnOrAfter="2026-10-27T08:30:00.000Z" Recipient="https://signin.aws.amazon.com/saml"/>
+      </saml:SubjectConfirmation>
+    </saml:Subject>
+    <saml:Conditions NotBefore="2026-10-27T07:59:00.000Z" NotOnOrAfter="2026-10-27T08:30:00.000Z">
+      <saml:AudienceRestriction>
+        <saml:Audience>urn:amazon:webservices</saml:Audience>
+      </saml:AudienceRestriction>
+    </saml:Conditions>
+    <saml:AttributeStatement>
+      <saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/RoleSessionName">
+        <saml:AttributeValue>svc-inventory</saml:AttributeValue>
+      </saml:Attribute>
+      <saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/Role">
+        <saml:AttributeValue>arn:aws:iam::123456789012:role/ReadOnly,arn:aws:iam::123456789012:saml-provider/ADFS</saml:AttributeValue>
+        <saml:AttributeValue>arn:aws:iam::210987654321:saml-provider/ADFS,arn:aws:iam::210987654321:role/ReadOnly</saml:AttributeValue>
+        <saml:AttributeValue>arn:aws:iam::111122223333:role/Admin,arn:aws:iam::111122223333:saml-provider/ADFS</saml:AttributeValue>
+        <saml:AttributeValue>arn:aws:iam::123456789012:role/Admin,arn:aws:iam::123456789012:saml-provider/ADFS</saml:AttributeValue>
+      </saml:Attribute>
+      <saml:Attribute Name="https://aws.amazon.com/SAML/Attributes/SessionDuration">
+        <saml:AttributeValue>3600</saml:AttributeValue>
+      </saml:Attribute>
+    </saml:AttributeStatement>
+  </saml:Assertion>
+</samlp:Response>

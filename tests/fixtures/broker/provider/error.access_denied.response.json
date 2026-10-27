@@ -1,0 +1,6 @@
+{
+  "status": "error",
+  "code": "ACCESS_DENIED",
+  "message": "no ReadOnly role for account 111122223333",
+  "retryable": false
+}

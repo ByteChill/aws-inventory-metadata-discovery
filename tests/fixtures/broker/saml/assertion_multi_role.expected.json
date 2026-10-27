@@ -1,0 +1,38 @@
+{
+  "expires_at": "2026-10-27T08:30:00+00:00",
+  "session_duration": 3600,
+  "roles": {
+    "123456789012": [
+      {
+        "role_arn": "arn:aws:iam::123456789012:role/ReadOnly",
+        "principal_arn": "arn:aws:iam::123456789012:saml-provider/ADFS"
+      },
+      {
+        "role_arn": "arn:aws:iam::123456789012:role/Admin",
+        "principal_arn": "arn:aws:iam::123456789012:saml-provider/ADFS"
+      }
+    ],
+    "210987654321": [
+      {
+        "role_arn": "arn:aws:iam::210987654321:role/ReadOnly",
+        "principal_arn": "arn:aws:iam::210987654321:saml-provider/ADFS"
+      }
+    ],
+    "111122223333": [
+      {
+        "role_arn": "arn:aws:iam::111122223333:role/Admin",
+        "principal_arn": "arn:aws:iam::111122223333:saml-provider/ADFS"
+      }
+    ]
+  },
+  "accounts_with_role": {
+    "ReadOnly": [
+      "123456789012",
+      "210987654321"
+    ],
+    "Admin": [
+      "111122223333",
+      "123456789012"
+    ]
+  }
+}
