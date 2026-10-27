@@ -1,0 +1,6 @@
+{
+  "arns": [
+    "arn:aws:ec2:ap-east-1::image/ami-0abcdef1234567890"
+  ],
+  "wait_seconds": 5
+}

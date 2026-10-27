@@ -1,0 +1,6 @@
+{
+  "arns": [
+    "arn:aws:sns:eu-west-1:123456789012:my-topic"
+  ],
+  "wait_seconds": 5
+}

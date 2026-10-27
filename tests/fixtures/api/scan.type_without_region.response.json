@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "region is required when resource_type is set"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "NOT_IMPLEMENTED",
+    "message": "change history is not implemented yet (spec 09)",
+    "details": null
+  }
+}
