@@ -18,16 +18,18 @@ interface Props {
   options: Option[];
   selected: string[];
   onChange: (selected: string[]) => void;
+  /** what the closed control says when something is picked (default: first label +N) */
+  summarize?: (selected: string[]) => string;
 }
 
 // long lists (accounts) get a search box
 const SEARCH_FROM = 8;
 
 /** A filter whose values are ticked in a list; each tick applies at once. */
-export function CheckFilter({ placeholder, options, selected, onChange }: Props) {
+export function CheckFilter({ placeholder, options, selected, onChange, summarize }: Props) {
   const [css, theme] = useStyletron();
   const labelOf = (id: string) => options.find((o) => o.id === id)?.label ?? id;
-  const summary = selected.length === 0 ? null : selected.length === 1 ? labelOf(selected[0]) : `${labelOf(selected[0])} +${selected.length - 1}`;
+  const summary = selected.length === 0 ? null : summarize ? summarize(selected) : selected.length === 1 ? labelOf(selected[0]) : `${labelOf(selected[0])} +${selected.length - 1}`;
 
   return (
     <StatefulPopover

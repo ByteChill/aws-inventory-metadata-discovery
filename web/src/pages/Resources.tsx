@@ -44,6 +44,24 @@ const TEXT_KEYS = ['name_prefix', 'tag'] as const;
 type ListKey = (typeof LIST_KEYS)[number];
 type TextKey = (typeof TEXT_KEYS)[number];
 
+const TAGS_SHOWN = 3;
+const TAG_SEARCH_FROM = 10; // tags in the details drawer before a search box appears
+const TAG_COLUMNS_KEY = 'inventory.tagColumns';
+
+function savedTagColumns(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(TAG_COLUMNS_KEY) ?? '[]');
+    return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Alphabetical, with AWS-managed tags (aws:cloudformation:...) after the team's own. */
+function tagOrder(a: string, b: string): number {
+  return Number(a.startsWith('aws:')) - Number(b.startsWith('aws:')) || a.localeCompare(b);
+}
+
 export function ResourcesPage() {
   const [css, theme] = useStyletron();
   const { t, lang } = useI18n();
@@ -112,45 +130,68 @@ export function ResourcesPage() {
     </button>
   );
 
-  // the Name tag is already the resource name; the rest are chips that filter by themselves
-  const TAGS_SHOWN = 3;
-  // cards are buttons themselves, so their chips are plain text (no nested buttons)
+  // tag keys the viewer picked as table columns (kept in this browser)
+  const [tagColumns, setTagColumns] = useState<string[]>(savedTagColumns);
+  const chooseTagColumns = (keys: string[]) => {
+    setTagColumns(keys);
+    try {
+      localStorage.setItem(TAG_COLUMNS_KEY, JSON.stringify(keys));
+    } catch {
+      // private mode: the choice just isn't remembered
+    }
+  };
+  // offered keys come from the rows on screen (the API has no tag-key listing), most common
+  // first; picked keys stay offered even when this page has none of them
+  const keyCounts = new Map<string, number>();
+  for (const r of items) for (const k of Object.keys(r.tags)) if (k !== 'Name') keyCounts.set(k, (keyCounts.get(k) ?? 0) + 1);
+  const tagKeyOptions = [
+    ...tagColumns.filter((k) => !keyCounts.has(k)).map((k) => ({ id: k, label: k })),
+    ...[...keyCounts.entries()]
+      .sort(([a, x], [b, y]) => y - x || tagOrder(a, b))
+      .map(([k, n]) => ({ id: k, label: `${k} (${n})` })),
+  ];
+
+  const chip = css({
+    all: 'unset',
+    cursor: 'pointer',
+    maxWidth: '16rem',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    padding: `0 ${theme.sizing.scale200}`,
+    borderRadius: theme.borders.radius200,
+    backgroundColor: theme.colors.backgroundTertiary,
+    ...theme.typography.ParagraphXSmall,
+    color: theme.colors.contentPrimary,
+    ':hover': { color: theme.colors.contentAccent },
+  });
+  const tagButton = (k: string, v: string, text: string) => (
+    <button
+      key={k}
+      type="button"
+      title={`${k}=${v}`}
+      className={chip}
+      onClick={(event) => {
+        event.stopPropagation();
+        setFilter('tag', `${k}=${v}`);
+      }}
+    >
+      {text}
+    </button>
+  );
+  // Name is the resource name and picked keys have their own columns; system (aws:) tags go last.
+  // Cards are buttons themselves, so their chips are plain text (no nested buttons).
   const tagChips = (r: Resource, interactive = true) => {
     const tags = Object.entries(r.tags)
-      .filter(([k]) => k !== 'Name')
-      .sort(([a], [b]) => a.localeCompare(b));
+      .filter(([k]) => k !== 'Name' && !(interactive && tagColumns.includes(k)))
+      .sort(([a], [b]) => tagOrder(a, b));
     if (!tags.length) return <Secondary>—</Secondary>;
-    const chip = css({
-      all: 'unset',
-      cursor: 'pointer',
-      maxWidth: '16rem',
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
-      padding: `0 ${theme.sizing.scale200}`,
-      borderRadius: theme.borders.radius200,
-      backgroundColor: theme.colors.backgroundTertiary,
-      ...theme.typography.ParagraphXSmall,
-      color: theme.colors.contentPrimary,
-      ':hover': { color: theme.colors.contentAccent },
-    });
     const hidden = tags.slice(TAGS_SHOWN);
     return (
       <div className={css({ display: 'flex', flexWrap: 'wrap', gap: theme.sizing.scale100 })}>
         {tags.slice(0, TAGS_SHOWN).map(([k, v]) =>
           interactive ? (
-          <button
-            key={k}
-            type="button"
-            title={`${k}=${v}`}
-            className={chip}
-            onClick={(event) => {
-              event.stopPropagation();
-              setFilter('tag', `${k}=${v}`);
-            }}
-          >
-            {k}={v}
-          </button>
+            tagButton(k, v, `${k}=${v}`)
           ) : (
             <span key={k} className={chip}>
               {k}={v}
@@ -158,11 +199,31 @@ export function ResourcesPage() {
           ),
         )}
         {hidden.length ? (
-          <StatefulTooltip content={() => <div>{hidden.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}</div>}>
-            <span className={css({ ...theme.typography.ParagraphXSmall, color: theme.colors.contentSecondary, cursor: 'default' })}>
-              +{hidden.length}
-            </span>
-          </StatefulTooltip>
+          interactive ? (
+            <StatefulTooltip
+              content={() => (
+                <div className={css({ maxHeight: '240px', overflowY: 'auto', maxWidth: '360px', wordBreak: 'break-all' })}>
+                  {hidden.map(([k, v]) => (
+                    <div key={k}>{`${k}=${v}`}</div>
+                  ))}
+                </div>
+              )}
+            >
+              <button
+                type="button"
+                title={t('All tags are in the details', '全部标签见详情')}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openResource(r.arn);
+                }}
+                className={css({ all: 'unset', cursor: 'pointer', ...theme.typography.ParagraphXSmall, color: theme.colors.contentAccent })}
+              >
+                +{hidden.length}
+              </button>
+            </StatefulTooltip>
+          ) : (
+            <span className={css({ ...theme.typography.ParagraphXSmall, color: theme.colors.contentSecondary })}>+{hidden.length}</span>
+          )
         ) : null}
       </div>
     );
@@ -239,7 +300,22 @@ export function ResourcesPage() {
         </div>
       </Panel>
 
-      <Panel title={pages.total != null ? t(`${pages.total.toLocaleString()} resources`, `共 ${pages.total.toLocaleString()} 个资源`) : t('Resources', '资源')}>
+      <Panel
+        title={pages.total != null ? t(`${pages.total.toLocaleString()} resources`, `共 ${pages.total.toLocaleString()} 个资源`) : t('Resources', '资源')}
+        actions={
+          narrow ? null : (
+            <div className={css({ width: '220px' })}>
+              <CheckFilter
+                placeholder={t('Tag columns', '标签列')}
+                options={tagKeyOptions}
+                selected={tagColumns}
+                onChange={chooseTagColumns}
+                summarize={(keys) => `${t('Tag columns', '标签列')}: ${keys.join(', ')}`}
+              />
+            </div>
+          )
+        }
+      >
         <ErrorNotice error={first.error} />
         {narrow ? (
           <div className={css({ display: 'grid', rowGap: theme.sizing.scale300 })}>
@@ -311,7 +387,8 @@ export function ResourcesPage() {
             <TableBuilderColumn<Resource> header={t('Region', '区域')}>{(r) => filterLink('region', r.region)}</TableBuilderColumn>
             <TableBuilderColumn<Resource> header={t('Name and ARN', '名称与 ARN')}>
               {(r) => (
-                <>
+                // ARNs are long: the table scrolls sideways rather than wrapping them every few letters
+                <div className={css({ minWidth: '18rem' })}>
                   <button
                     type="button"
                     onClick={() => openResource(r.arn)}
@@ -322,10 +399,15 @@ export function ResourcesPage() {
                   <div className={css({ marginTop: theme.sizing.scale100 })}>
                     <Copyable value={r.arn} />
                   </div>
-                </>
+                </div>
               )}
             </TableBuilderColumn>
-            <TableBuilderColumn<Resource> header={t('Tags', '标签')}>{(r) => tagChips(r)}</TableBuilderColumn>
+            {tagColumns.map((k) => (
+              <TableBuilderColumn<Resource> key={k} header={k}>
+                {(r) => (r.tags[k] !== undefined ? tagButton(k, r.tags[k], r.tags[k] || '""') : <Secondary>—</Secondary>)}
+              </TableBuilderColumn>
+            ))}
+            <TableBuilderColumn<Resource> header={tagColumns.length ? t('Other tags', '其他标签') : t('Tags', '标签')}>{(r) => tagChips(r)}</TableBuilderColumn>
             <TableBuilderColumn<Resource> header={t('Last changed', '最近变化')}>
               {(r) => (
                 <>
@@ -377,8 +459,15 @@ function ResourceDrawer({ arn, onClose, onRefreshed }: { arn: string | null; onC
   const detail = useAsync(() => (arn ? api.resourceByArn(arn) : Promise.resolve(null)), [arn]);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  useEffect(() => setError(null), [arn]);
+  const [tagQuery, setTagQuery] = useState('');
+  useEffect(() => {
+    setError(null);
+    setTagQuery('');
+  }, [arn]);
   const shown = detail.data;
+  const tagEntries = Object.entries(shown?.tags ?? {}).sort(([a], [b]) => tagOrder(a, b));
+  const needle = tagQuery.trim().toLowerCase();
+  const matchingTags = needle ? tagEntries.filter(([k, v]) => `${k}=${v}`.toLowerCase().includes(needle)) : tagEntries;
 
   const refresh = async () => {
     if (!arn) return;
@@ -453,11 +542,19 @@ function ResourceDrawer({ arn, onClose, onRefreshed }: { arn: string | null; onC
           <h3 className={heading}>{t('Details', '概要')}</h3>
           {attributes.length ? <KeyValues items={attributes} /> : <Secondary>{t('No summary for this type', '此类型暂无概要')}</Secondary>}
 
-          <h3 className={heading}>{t('Tags', '标签')}</h3>
-          {Object.keys(shown.tags).length ? (
-            <KeyValues items={Object.entries(shown.tags).sort(([a], [b]) => a.localeCompare(b))} />
+          <h3 className={heading}>
+            {t('Tags', '标签')}
+            {tagEntries.length ? ` (${tagEntries.length})` : ''}
+          </h3>
+          {tagEntries.length > TAG_SEARCH_FROM ? (
+            <div className={css({ marginBottom: theme.sizing.scale300 })}>
+              <Input size={SIZE.compact} value={tagQuery} placeholder={t('Search tags', '搜索标签')} onChange={(e) => setTagQuery(e.currentTarget.value)} clearable />
+            </div>
+          ) : null}
+          {matchingTags.length ? (
+            <KeyValues items={matchingTags} />
           ) : (
-            <Secondary>{t('No tags', '没有标签')}</Secondary>
+            <Secondary>{tagEntries.length ? t('No tag matches', '没有匹配的标签') : t('No tags', '没有标签')}</Secondary>
           )}
 
           <h3 className={heading}>{t('History', '记录')}</h3>
