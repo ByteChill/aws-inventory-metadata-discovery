@@ -50,7 +50,10 @@ def error_response(
 
 async def _inventory_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, InventoryError)
-    return error_response(exc.http_status, exc.code, exc.message, getattr(exc, "details", None))
+    response = error_response(exc.http_status, exc.code, exc.message, getattr(exc, "details", None))
+    if exc.http_status == 401:
+        response.headers["WWW-Authenticate"] = "Bearer"
+    return response
 
 
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:

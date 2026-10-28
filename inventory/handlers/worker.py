@@ -24,6 +24,7 @@ from inventory.observability import (
     setup_logging,
     submit_with_context,
 )
+from inventory.transport import QueueLocator
 
 SERVICE_NAME = "inventory-worker"
 log = logging.getLogger(__name__)
@@ -156,9 +157,7 @@ def main() -> None:
     )
     if common.metrics_mode == "api":
         enable_metric_api(runtime.clients.client("monitoring", settings.region))
-    cell = runtime.common.cell(settings.region)
-    if not cell.ondemand_queue_url or not cell.scheduled_queue_url:
-        raise SystemExit(f"cell {settings.region} has no queue URLs configured")
+    queues = QueueLocator(runtime.common, runtime.clients)
     executor = TaskExecutor(
         runtime.engine,
         runtime.db,
@@ -174,8 +173,8 @@ def main() -> None:
         settings,
         runtime.clients.client("sqs", settings.region),
         executor.handle,
-        ondemand_url=cell.ondemand_queue_url,
-        scheduled_url=cell.scheduled_queue_url,
+        ondemand_url=queues.url(settings.region, "ondemand"),
+        scheduled_url=queues.url(settings.region, "scheduled"),
     )
     signal.signal(signal.SIGTERM, worker.stop)
     signal.signal(signal.SIGINT, worker.stop)

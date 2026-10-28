@@ -1,4 +1,5 @@
 # One region cell: scheduled/ondemand queues (+DLQs) and the ECS worker service.
+# Every regional resource sets `region` (AWS provider 6.x), so one provider serves all cells.
 
 terraform {
   required_providers {
@@ -41,6 +42,7 @@ locals {
 # --------------------------------------------------------------------------- queues
 
 resource "aws_sqs_queue" "dlq" {
+  region                    = var.region
   for_each                  = local.queues
   name                      = "${var.name_prefix}-${each.key}-dlq"
   message_retention_seconds = 1209600
@@ -48,6 +50,7 @@ resource "aws_sqs_queue" "dlq" {
 }
 
 resource "aws_sqs_queue" "this" {
+  region                     = var.region
   for_each                   = local.queues
   name                       = "${var.name_prefix}-${each.key}"
   visibility_timeout_seconds = 900
@@ -63,12 +66,14 @@ resource "aws_sqs_queue" "this" {
 # --------------------------------------------------------------------------- worker
 
 resource "aws_cloudwatch_log_group" "worker" {
+  region            = var.region
   name              = "/ecs/${var.name_prefix}-worker"
   retention_in_days = var.log_retention_days
 }
 
 resource "aws_ecs_cluster" "this" {
-  name = "${var.name_prefix}-worker"
+  region = var.region
+  name   = "${var.name_prefix}-worker"
   setting {
     name  = "containerInsights"
     value = "enabled"
@@ -137,6 +142,7 @@ resource "aws_iam_role_policy" "task_queues" {
 }
 
 resource "aws_security_group" "worker" {
+  region      = var.region
   name        = "${var.name_prefix}-worker"
   description = "Inventory worker tasks (egress only)"
   vpc_id      = var.vpc_id
@@ -150,6 +156,7 @@ resource "aws_security_group" "worker" {
 }
 
 resource "aws_ecs_task_definition" "worker" {
+  region                   = var.region
   family                   = "${var.name_prefix}-worker"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
@@ -160,14 +167,13 @@ resource "aws_ecs_task_definition" "worker" {
 
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = "X86_64"
   }
 
   container_definitions = jsonencode([{
     name        = "worker"
     image       = var.image_uri
     essential   = true
-    entryPoint  = ["python", "-m", "inventory.handlers.worker"]
     stopTimeout = 120
     environment = [for k, v in var.environment : { name = k, value = v }]
     secrets     = [for k, v in var.secrets : { name = k, valueFrom = v }]
@@ -183,6 +189,7 @@ resource "aws_ecs_task_definition" "worker" {
 }
 
 resource "aws_ecs_service" "worker" {
+  region          = var.region
   name            = "${var.name_prefix}-worker"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
@@ -203,6 +210,7 @@ resource "aws_ecs_service" "worker" {
 # --------------------------------------------------------------------------- autoscaling
 
 resource "aws_appautoscaling_target" "worker" {
+  region             = var.region
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.worker.name}"
   scalable_dimension = "ecs:service:DesiredCount"
@@ -211,6 +219,7 @@ resource "aws_appautoscaling_target" "worker" {
 }
 
 resource "aws_appautoscaling_policy" "backlog" {
+  region             = var.region
   name               = "${var.name_prefix}-worker-backlog"
   service_namespace  = aws_appautoscaling_target.worker.service_namespace
   resource_id        = aws_appautoscaling_target.worker.resource_id
@@ -244,6 +253,7 @@ resource "aws_appautoscaling_policy" "backlog" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "backlog" {
+  region              = var.region
   alarm_name          = "${var.name_prefix}-worker-backlog"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
@@ -276,6 +286,7 @@ resource "aws_cloudwatch_metric_alarm" "backlog" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "dlq" {
+  region              = var.region
   for_each            = local.queues
   alarm_name          = "${var.name_prefix}-${each.key}-dlq-not-empty"
   alarm_description   = "Scan task messages failed repeatedly (BadMessage or crashes); inspect the DLQ."

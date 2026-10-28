@@ -156,6 +156,20 @@ def utcnow() -> datetime:
 # --------------------------------------------------------------------------- resources
 
 
+AccountType = Literal["dev", "preprod", "prod"]
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryAccount:
+    """An account as account-directory lists it; ``eim`` is the virtual owner of accounts."""
+
+    account_id: str
+    name: str | None
+    eim: str | None
+    account_type: str | None
+    status: str
+
+
 @dataclass(frozen=True, slots=True)
 class ResourceKey:
     resource_type: str
@@ -230,7 +244,6 @@ class TypeStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     AUTH_DENIED = "auth_denied"
-    SKIPPED_NO_ENDPOINT = "skipped_no_endpoint"
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +322,7 @@ TERMINAL_TASK_STATUSES: frozenset[str] = frozenset(
     {"succeeded", "partial", "failed", "auth_denied", "timed_out"}
 )
 TERMINAL_JOB_STATUSES: frozenset[str] = frozenset({"succeeded", "partial", "failed", "timed_out"})
-QueueKind = Literal["scheduled", "ondemand", "inline"]
+QueueKind = Literal["scheduled", "ondemand"]
 Trigger = Literal["schedule", "api"]
 
 
@@ -337,8 +350,6 @@ class ScanScope(_Contract):
             return self
         if not self.account_id:
             raise ValueError("account_id is required")
-        if self.resource_type and not self.region:
-            raise ValueError("region is required when resource_type is set")
         return self
 
     def as_json(self) -> dict[str, Any]:
@@ -404,6 +415,7 @@ class ScanJob(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     deadline_at: datetime | None = None
+    requested_by: str | None = None
 
     @property
     def full_refresh(self) -> bool:

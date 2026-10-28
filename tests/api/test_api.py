@@ -3,16 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, select
 
 from inventory.api.app import create_app
+from inventory.bootstrap import Runtime
+from inventory.db import AccountRegionRepository, AccountRepository, JobRepository, scan_task
+from inventory.models import DirectoryAccount
 from inventory.observability import ContextFilter
-from tests.api.conftest import app_settings, new_async_engine, without_request_id
+from tests.api.conftest import app_settings, new_async_engine, running_worker, without_request_id
+from tests.conftest import FROZEN_NOW
 from tests.helpers import assert_matches_fixture, load_fixture
 from tests.planner.conftest import drain, make_runtime
 
@@ -175,6 +181,35 @@ def test_by_arn(client: TestClient) -> None:
 
 
 @pytest.mark.usefixtures("seeded")
+def test_resource_path_forms(client: TestClient) -> None:
+    for case in load_fixture("api/resources.paths.cases.json"):
+        response = client.get(case["path"], params=case.get("params"))
+        body = response.json()
+        assert response.status_code == case["status"], case["path"]
+        if "ids" in case:
+            assert sorted(r["resource_id"] for r in body["items"]) == case["ids"], case["path"]
+        elif "id" in case:
+            assert body["resource_id"] == case["id"] and body["data"] is not None
+        else:
+            assert body["error"]["code"] == case["code"], case["path"]
+
+
+@pytest.mark.usefixtures("seeded")
+def test_resource_path_forms_page_with_cursor(client: TestClient) -> None:
+    first = client.get("/v1/resources/all", params={"limit": 2}).json()
+    second = client.get(
+        "/v1/resources/all", params={"limit": 2, "cursor": first["next_cursor"]}
+    ).json()
+    elsewhere = client.get(
+        "/v1/resources/123456789012", params={"limit": 2, "cursor": first["next_cursor"]}
+    )
+
+    ids = [r["resource_id"] for r in first["items"] + second["items"]]
+    assert sorted(ids) == ["ami-0x", "vpc-0a", "vpc-0b"] and second["next_cursor"] is None
+    assert elsewhere.status_code == 400  # a cursor is bound to the filters it was issued for
+
+
+@pytest.mark.usefixtures("seeded")
 def test_stats_paths_agree(client: TestClient) -> None:
     fast = client.get("/v1/resources/stats", params={"group_by": "account_id,resource_type"}).json()
     counted = client.get(
@@ -202,6 +237,38 @@ def test_coverage_and_resource_types(client: TestClient) -> None:
     assert vpc["enabled_regions"] == ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
 
 
+@pytest.mark.usefixtures("seeded")
+def test_eim_and_account_type_dimension(client: TestClient, db: Engine) -> None:
+    accounts = [DirectoryAccount(**a) for a in load_fixture("api/accounts.seed.json")]
+    with db.begin() as conn:
+        AccountRepository().upsert(conn, accounts, FROZEN_NOW)
+
+    def ids(response: Any) -> list[str]:
+        return sorted(r["resource_id"] for r in response.json()["items"])
+
+    by_eim = client.get("/v1/resources/stats", params={"group_by": "eim"}).json()
+    counted = client.get(
+        "/v1/resources/stats",
+        params={"group_by": "eim,account_type", "include_deleted": "true"},
+    ).json()
+    vpc = client.get("/v1/resources/by-arn", params={"arn": VPC_A}).json()
+    search = client.post("/v1/resources/search", json={"account_types": ["prod", "dev"]})
+    actual = {
+        "by_eim": by_eim["groups"],
+        "by_eim_counted": counted["groups"],
+        "eim_20142209": ids(client.get("/v1/resources", params={"eim": "20142209"})),
+        "prod": ids(client.get("/v1/resources/all", params={"account_type": "prod"})),
+        "search_prod_or_dev": ids(search),
+        "vpc_account": {k: vpc[k] for k in ("account_name", "eim", "account_type")},
+        "accounts": client.get("/v1/accounts").json()["items"],
+    }
+    coverage = client.get("/v1/accounts/123456789012/coverage").json()
+
+    assert actual == load_fixture("api/accounts.eim.expected.json")
+    assert coverage["account"]["name"] == "payments-dev"
+    assert client.get("/v1/resources", params={"account_type": "qa"}).status_code == 422
+
+
 # --------------------------------------------------------------------------- scans
 
 
@@ -218,17 +285,84 @@ def test_scan_is_queued_and_deduplicated(client: TestClient) -> None:
     assert first.status_code == 202
     assert first.json()["request_id"] == "r-scan" and not first.json()["deduplicated"]
     assert second.json()["deduplicated"] and second.json()["job_id"] == first.json()["job_id"]
-    (message,) = drain("eu-west-1", "inventory-test-ondemand")
+    (message,) = drain("eu-west-1", "inventory-local-ondemand")
     assert message["MessageAttributes"]["request_id"]["StringValue"] == "r-scan"
     assert fetched["tasks"][0]["region"] == "eu-west-1"
     assert fetched["stats"]["tasks_total"] == 1
     assert [j["job_id"] for j in listed["items"]] == [first.json()["job_id"]]
 
 
-@pytest.mark.parametrize("name", ["scan.invalid_region", "scan.type_without_region"])
+def test_task_failure_reason_is_exposed(client: TestClient, db: Any) -> None:
+    job_id = client.post(
+        "/v1/scans", json=load_fixture("api/scan.account_region.request.json")
+    ).json()["job_id"]
+    seed = load_fixture("api/scan.task_failed.seed.json")
+    with db.begin() as conn:
+        task_id = conn.execute(
+            select(scan_task.c.task_id).where(scan_task.c.job_id == job_id)
+        ).scalar_one()
+        JobRepository().finish_task(
+            conn,
+            task_id,
+            seed["status"],
+            error_code=seed["error_code"],
+            error_message=seed["error_message"],
+        )
+
+    (task,) = client.get(f"/v1/scans/{job_id}", params={"include_tasks": "true"}).json()["tasks"]
+    picked = {k: task[k] for k in ("status", "error_code", "error_message", "result")}
+    assert_matches_fixture(picked, "api/scan.task_failed.expected.json")
+
+
+@pytest.mark.parametrize("name", ["scan.invalid_region", "scan.missing_account"])
 def test_invalid_scopes(client: TestClient, name: str) -> None:
     response = client.post("/v1/scans", json=load_fixture(f"api/{name}.request.json"))
     assert response.status_code == 422
+
+
+def seed_enabled_regions(db: Any, name: str) -> None:
+    seed = load_fixture(f"api/{name}.seed.json")
+    with db.begin() as conn:
+        AccountRegionRepository().replace(
+            conn,
+            seed["account_id"],
+            enabled=seed["enabled"],
+            supported=seed["supported"],
+            checked_at=datetime.now(UTC),
+        )
+
+
+def test_type_scope_without_region_uses_enabled_regions(client: TestClient, db: Any) -> None:
+    seed_enabled_regions(db, "scan.unscannable")  # eu-west-2 is supported but not enabled
+
+    response = client.post(
+        "/v1/scans", json=load_fixture("api/scan.type_without_region.request.json")
+    )
+    job = client.get(
+        f"/v1/scans/{response.json()['job_id']}", params={"include_tasks": "true"}
+    ).json()
+
+    tasks = sorted(
+        ({"region": t["region"], "resource_types": t["resource_types"]} for t in job["tasks"]),
+        key=lambda t: t["region"],
+    )
+    assert_matches_fixture(
+        {"status_code": response.status_code, "tasks": tasks},
+        "api/scan.type_without_region.expected.json",
+    )
+
+
+def test_unscannable_scopes_are_rejected_without_a_job(client: TestClient, db: Any) -> None:
+    seed_enabled_regions(db, "scan.unscannable")
+
+    messages = []
+    for body in load_fixture("api/scan.unscannable.request.json"):
+        response = client.post("/v1/scans", json=body)
+        assert response.status_code == 422, body
+        messages.append(response.json()["error"]["message"])
+
+    assert_matches_fixture(messages, "api/scan.unscannable.expected.json")
+    assert client.get("/v1/scans").json()["items"] == []
 
 
 def test_unknown_job(client: TestClient) -> None:
@@ -238,21 +372,24 @@ def test_unknown_job(client: TestClient) -> None:
 # --------------------------------------------------------------------------- refresh
 
 
-def test_refresh_inline_create_update_delete(client: TestClient, ec2_ids: dict[str, str]) -> None:
+def test_refresh_create_update_delete(
+    client: TestClient, runtime: Runtime, ec2_ids: dict[str, str]
+) -> None:
     import boto3
 
     arn = f"arn:aws:ec2:ap-east-1:123456789012:instance/{ec2_ids['web-01']}"
-    created = client.post("/v1/resources/refresh", json={"arns": [arn]})
     ec2 = boto3.client("ec2", region_name="ap-east-1")
-    ec2.create_tags(Resources=[ec2_ids["web-01"]], Tags=[{"Key": "Owner", "Value": "team-a"}])
-    updated = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    unchanged = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    ec2.terminate_instances(InstanceIds=[ec2_ids["web-01"]])
-    deleted = client.post("/v1/resources/refresh", json={"arns": [arn]})
-    missing = client.post(
-        "/v1/resources/refresh",
-        json={"arns": ["arn:aws:ec2:ap-east-1:123456789012:instance/i-0123456789abcdef0"]},
-    )
+    with running_worker(runtime, "ap-east-1"):
+        created = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        ec2.create_tags(Resources=[ec2_ids["web-01"]], Tags=[{"Key": "Owner", "Value": "team-a"}])
+        updated = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        unchanged = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        ec2.terminate_instances(InstanceIds=[ec2_ids["web-01"]])
+        deleted = client.post("/v1/resources/refresh", json={"arns": [arn]})
+        missing = client.post(
+            "/v1/resources/refresh",
+            json={"arns": ["arn:aws:ec2:ap-east-1:123456789012:instance/i-0123456789abcdef0"]},
+        )
 
     assert created.status_code == 200
     assert [
@@ -286,24 +423,24 @@ def test_refresh_unresolvable_arns(
     assert (result["error"] or {}).get("code") == code
 
 
-def test_refresh_without_reachable_endpoint_is_queued(client: TestClient) -> None:
+def test_refresh_is_queued_to_the_resource_region(client: TestClient) -> None:
     arn = "arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0123456789abcdef0"
 
     response = client.post("/v1/resources/refresh", json={"arns": [arn], "wait_seconds": 0.1})
 
     assert response.status_code == 202
     assert response.json()["results"][0]["status"] == "pending"
-    (message,) = drain("eu-west-1", "inventory-test-ondemand")
+    (message,) = drain("eu-west-1", "inventory-local-ondemand")
     assert json.loads(message["Body"])["resource_ids"] == ["vpc-0123456789abcdef0"]
 
 
-def test_many_arns_go_async(client: TestClient) -> None:
+def test_many_arns_are_queued(client: TestClient) -> None:
     arns = [f"arn:aws:ec2:ap-east-1:123456789012:vpc/vpc-{i:017x}" for i in range(21)]
 
-    response = client.post("/v1/resources/refresh", json={"arns": arns})
+    response = client.post("/v1/resources/refresh", json={"arns": arns, "wait_seconds": 0})
 
     assert response.status_code == 202
-    assert len(drain("ap-east-1", "inventory-test-ondemand")) == 21
+    assert len(drain("ap-east-1", "inventory-local-ondemand")) == 21
 
 
 # --------------------------------------------------------------------------- contract
@@ -335,22 +472,18 @@ def test_cursor_with_wrong_keys_is_a_400(client: TestClient) -> None:
 
 
 def test_scope_validation_message(client: TestClient) -> None:
-    response = client.post(
-        "/v1/scans", json=load_fixture("api/scan.type_without_region.request.json")
-    )
-    expected = load_fixture("api/scan.type_without_region.response.json")["error"]
+    response = client.post("/v1/scans", json=load_fixture("api/scan.missing_account.request.json"))
+    expected = load_fixture("api/scan.missing_account.response.json")["error"]
 
     body = response.json()["error"]
     assert (body["code"], body["message"]) == (expected["code"], expected["message"])
     assert body["details"][0]["loc"][:2] == ["body", "scope"]
 
 
-def test_scan_without_work_finishes_within_the_wait(client: TestClient, db: Any) -> None:
-    from datetime import UTC, datetime
-
-    from inventory.db import AccountRegionRepository
-
-    with db.begin() as conn:  # the account has none of the supported regions enabled
+def test_account_without_enabled_scan_regions_still_scans_global(
+    client: TestClient, db: Any
+) -> None:
+    with db.begin() as conn:  # the account has none of the scan regions enabled
         AccountRegionRepository().replace(
             conn,
             "123456789012",
@@ -359,12 +492,13 @@ def test_scan_without_work_finishes_within_the_wait(client: TestClient, db: Any)
             checked_at=datetime.now(UTC),
         )
 
-    response = client.post(
-        "/v1/scans", json={"scope": {"account_id": "123456789012"}, "wait_seconds": 2}
-    )
+    response = client.post("/v1/scans", json={"scope": {"account_id": "123456789012"}})
+    job = client.get(
+        f"/v1/scans/{response.json()['job_id']}", params={"include_tasks": "true"}
+    ).json()
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "succeeded"
+    assert response.status_code == 202
+    assert [t["region"] for t in job["tasks"]] == ["global"]
 
 
 @pytest.mark.usefixtures("seeded")
@@ -406,7 +540,7 @@ def test_refresh_errors_use_contract_codes(
     denied = make_runtime(db, FakeCredentials(denied=True))
     app = create_app(app_settings(), runtime=denied, async_engine=new_async_engine())
     arn = f"arn:aws:ec2:ap-east-1:123456789012:instance/{ec2_ids['web-01']}"
-    with TestClient(app) as client:
+    with TestClient(app) as client, running_worker(denied, "ap-east-1"):
         result = client.post("/v1/resources/refresh", json={"arns": [arn]}).json()["results"][0]
 
     assert (result["status"], result["error"]["code"]) == ("error", "ACCOUNT_ACCESS_DENIED")

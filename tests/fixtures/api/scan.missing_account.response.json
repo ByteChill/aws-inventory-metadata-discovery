@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "account_id is required"
+  }
+}

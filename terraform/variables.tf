@@ -3,40 +3,70 @@ variable "env" {
   type        = string
 }
 
-variable "image_tag" {
-  description = "Tag of the inventory image in ECR."
-  type        = string
+variable "component_versions" {
+  description = "Image version (tag) of each component in ECR aws-inventory-discover/<component>; change one to release only that component."
+  type = object({
+    broker  = string
+    planner = string
+    api     = string
+    worker  = string
+  })
 }
 
-variable "home_region" {
-  description = "Region of the control plane."
+variable "primary_region" {
+  description = "Region of the control plane (broker, planner, API, database, Redis)."
   type        = string
   default     = "ap-east-1"
 }
 
-variable "global_home_region" {
-  description = "Region whose cell scans global resources (IAM, Route 53)."
-  type        = string
-  default     = "us-east-1"
-}
-
 variable "regions" {
   description = <<-EOT
-    Existing network per region (managed by the network team, only referenced here).
-    endpoints: boto3 service name -> endpoint URL written into RegionCell.endpoints.
-    Use "" for the region's own private DNS, or the endpoint-specific DNS
-    (https://vpce-...) for services that other regions call over VPC peering.
+    Scan regions and their existing network (managed by the network team, only referenced here).
+    endpoints: endpoint-specific DNS (https://vpce-...) of this region's interface endpoints that
+    other regions call over VPC peering (private DNS is not shared across peering):
+      every region except the primary: sqs
+      the primary region: lambda, secretsmanager
+      us-east-1 (unless primary): sts, ec2
   EOT
   type = map(object({
     vpc_id             = string
     cidr_block         = string
     private_subnet_ids = list(string)
-    endpoints          = map(string)
+    endpoints          = optional(map(string), {})
   }))
 
   validation {
-    condition     = length(setsubtract(keys(var.regions), ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"])) == 0
-    error_message = "Only ap-east-1, eu-west-1, eu-west-2 and us-east-1 have provider aliases."
+    condition     = contains(keys(var.regions), var.primary_region) && contains(keys(var.regions), "us-east-1")
+    error_message = "regions must include the primary region and us-east-1 (global resources)."
+  }
+  validation {
+    condition = alltrue([
+      for region, cfg in var.regions : region == var.primary_region || contains(keys(cfg.endpoints), "sqs")
+    ])
+    error_message = "every region except the primary needs an sqs endpoint (the planner and API send to it)."
+  }
+  validation {
+    condition = (
+      length(var.regions) == 1 || length(setsubtract(["lambda", "secretsmanager"], keys(try(var.regions[var.primary_region].endpoints, {})))) == 0
+    )
+    error_message = "the primary region needs lambda and secretsmanager endpoints (workers in other regions call them)."
+  }
+  validation {
+    condition = (
+      var.primary_region == "us-east-1" || length(setsubtract(["sts", "ec2"], keys(try(var.regions["us-east-1"].endpoints, {})))) == 0
+    )
+    error_message = "us-east-1 needs sts (broker) and ec2 (DescribeRegions) endpoints."
+  }
+}
+
+variable "lambda_architecture" {
+  description = "Instruction set of the Lambda images (must match how they were built)."
+  type        = string
+  default     = "x86_64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.lambda_architecture)
+    error_message = "lambda_architecture must be x86_64 or arm64."
   }
 }
 
@@ -81,19 +111,20 @@ variable "alarm_topic_arns" {
   default     = {}
 }
 
+variable "deleted_retention_days" {
+  description = "Days a soft-deleted resource is kept before maintenance purges it."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.deleted_retention_days >= 1
+    error_message = "deleted_retention_days must be at least 1."
+  }
+}
+
 variable "log_retention_days" {
   type    = number
   default = 30
-}
-
-variable "broker_sts_region" {
-  description = <<-EOT
-    Region whose STS endpoint the broker calls for AssumeRoleWithSAML. Use a region enabled by
-    default (the home region ap-east-1 is opt-in and fails for accounts that have not enabled it).
-    The cell of that region must list an endpoint-specific "sts" endpoint reachable over peering.
-  EOT
-  type        = string
-  default     = "us-east-1"
 }
 
 variable "schedules_enabled" {

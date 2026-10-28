@@ -1,0 +1,22 @@
+{
+  "headers": {
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "no-referrer",
+    "cache-control": "no-cache"
+  },
+  "page_contains": [
+    "<div id=\"root\"></div>"
+  ],
+  "assets": {
+    "assets/index-test.js": [
+      "text/javascript",
+      "application/javascript"
+    ]
+  },
+  "redirects": {
+    "/": "/ui/",
+    "/ui": "/ui/"
+  },
+  "missing_asset": "/ui/nonexistent.js"
+}

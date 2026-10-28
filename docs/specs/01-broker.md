@@ -37,7 +37,6 @@ tests/broker/...                 tests/fixtures/broker/...
 | `redis_url` | 必填 | `rediss://host:6379/0` |
 | `redis_auth_secret_arn` | None | |
 | `kms_key_id` | 必填 | |
-| `sts_region` | `ap-east-1` | 使用 regional STS endpoint |
 | `session_duration_seconds` | 3600 | 实际取 `min(本值, assertion 的 SessionDuration)` |
 | `saml_refresh_margin_seconds` | 300 | assertion 到期前多久视为失效 |
 | `default_min_ttl_seconds` | 1200 | |
@@ -287,3 +286,8 @@ class BrokerLambdaProvider:       # 实现 CredentialProvider 接口
 
 - `sts_region` 在 AWS 上配置为默认启用的 region（Terraform 默认 us-east-1），通过该 region 的 endpoint-specific `sts` endpoint 经 peering 访问；ap-east-1 是 opt-in region，未启用它的目标账号在那里 `AssumeRoleWithSAML` 会失败。regional STS 签发的凭证在所有 region 有效。
 - broker 的 Secrets Manager 与 KMS client 使用 `INVENTORY_HOME_REGION`，与 `sts_region` 无关。
+
+### 发布与配置修订（spec 08 R4）
+
+- 删除 `sts_region`：`AssumeRoleWithSAML` 固定在 us-east-1 调用（所有账号默认启用；primary region ap-east-1 是 opt-in），跨 region 地址来自 `INVENTORY_ENDPOINTS`。Secrets Manager 与 KMS 使用 `INVENTORY_PRIMARY_REGION`。
+- Lambda 函数名 `inventory-<env>-adfs-broker`。

@@ -1,0 +1,18 @@
+{
+  "by_eim": [
+    {"eim": "20142209", "count": 2},
+    {"eim": "20150011", "count": 1}
+  ],
+  "by_eim_counted": [
+    {"eim": "20142209", "account_type": "dev", "count": 2},
+    {"eim": "20150011", "account_type": "prod", "count": 1}
+  ],
+  "eim_20142209": ["vpc-0a", "vpc-0b"],
+  "prod": ["ami-0x"],
+  "search_prod_or_dev": ["ami-0x", "vpc-0a", "vpc-0b"],
+  "vpc_account": {"account_name": "payments-dev", "eim": "20142209", "account_type": "dev"},
+  "accounts": [
+    {"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE", "listed_at": "2026-10-27T08:00:00Z"},
+    {"account_id": "210987654321", "name": null, "eim": "20150011", "account_type": "prod", "status": "ACTIVE", "listed_at": "2026-10-27T08:00:00Z"}
+  ]
+}

@@ -19,7 +19,8 @@ EventBridge Scheduler (4h) ─► Step Functions ─► planner λ ─► 各 re
                                       消费者 ─► FastAPI (ECS) ─────┘（查询、触发扫描、刷新）
 ```
 
-- 控制面（调度、数据库、API、broker）在 `ap-east-1`；`ap-east-1`、`eu-west-1`、`eu-west-2`、`us-east-1` 各有一个 worker cell，经 VPC peering 与中心互通。
+- 控制面（调度、数据库、API、broker）在 primary region `ap-east-1`；`ap-east-1`、`eu-west-1`、`eu-west-2`、`us-east-1` 各有一个 worker cell，经 VPC peering 与中心互通。
+- 四个组件（broker、planner、api、worker）各有自己的版本与镜像，可以单独发布（[spec 08](docs/specs/08-infrastructure.md)）。
 - 每种资源类型是一个 collector 类，新增类型只需新增一个类、一个迁移和测试。
 
 ## 技术栈
@@ -32,7 +33,8 @@ Python 3.12 · uv · FastAPI · pydantic v2 · pydantic-settings · SQLAlchemy C
 pyproject.toml / uv.lock     唯一的项目配置与依赖锁
 Makefile                     常用命令
 compose.yaml                 本地依赖：PostgreSQL、Redis、moto server（podman compose）
-Dockerfile                   唯一的镜像，Lambda 与 ECS 共用
+deploy/                      镜像构建（Containerfile、build.sh、versions.json）与离线 DDL（ddl.sh）
+web/                         Web UI（React + baseui + Vite），构建后由 API 在 /ui/ 提供
 inventory/                   唯一的 Python 包
   config.py                  所有配置（pydantic-settings）
   errors.py                  错误类型
@@ -72,10 +74,14 @@ make setup        # uv sync，安装全部依赖
 make up           # podman compose up -d：PostgreSQL、Redis（镜像来自 ECR Public，不需要 Docker Hub）
 make moto         # 本机运行 moto server（端口 5000），本地跑 API/worker 时使用
 make migrate      # alembic upgrade head
+make queues       # 在 moto 中创建各 region 的扫描队列（按名字查找，与 AWS 一致）
 make check        # ruff + mypy + 单元测试
 make test-int     # 集成测试（需要 make up）
 make cov          # 全部测试 + 覆盖率
-make image        # podman build --platform linux/arm64 -t inventory:dev .
+make web          # 构建 Web UI 到 web/dist（需要 Node 22）
+make web-dev      # Vite 开发服务器（:5173）
+make images       # 构建 4 个组件镜像（linux/amd64），见下文「发布」
+make ddl          # 生成全部迁移的离线 SQL 到 dist/ddl/
 make down         # 停止本地依赖
 ```
 
@@ -87,6 +93,12 @@ make down         # 停止本地依赖
 uv run uvicorn --factory inventory.api.app:create_app --reload --port 8080    # API
 uv run python -m inventory.handlers.worker                   # worker（使用 .env 中的 WORKER_REGION）
 ```
+
+Web UI（[spec 10](docs/specs/10-web-ui-and-auth.md)，baseui）：需要 Node 22。`make web` 构建到 `web/dist`，启动 API 时设置 `API_UI_DIR=web/dist`，浏览器打开 <http://localhost:8080/ui/>；改界面时用 `make web-dev`（Vite，端口 5173，`/v1` 代理到 8080）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
+
+认证默认关闭（`API_AUTH_MODE=disabled`，所有调用方都是 admin）。接入 SSO 后设置 `API_AUTH_MODE=enforced` 与 `API_JWT_JWKS_URL`、`API_JWT_ISSUER`、`API_JWT_AUDIENCE`；用户用 SSO 的 JWT，其他服务用 admin 在 UI 中创建的 API key（`X-API-Key`）。见 [api.md §1.5](docs/api.md)。
+
+macOS 的"隔空播放接收器"默认占用 5000 端口：可在系统设置中关闭，或运行 `uv run moto_server -p 5001` 并把 `.env` 中的 `localhost:5000` 改为 `localhost:5001`。
 
 ## 开发流程
 
@@ -120,49 +132,39 @@ M1 与 M2 可以并行；M5、M6 可以与 M3、M4 并行。
 
 见 [spec 04 的检查清单](docs/specs/04-collectors.md#新增资源类型的检查清单)：collector 类、spec 规格表、分区迁移、endpoint 配置、fixture 与测试。
 
-## 部署
+## 发布
 
-镜像 tag 不可变，每次构建使用新的 tag（例如 git sha）。下文的 `<env>` 为 `dev` / `prod`，`<tag>` 为镜像 tag。
+四个组件各自有版本（`deploy/versions.json`），镜像为 ECR `aws-inventory-discover/<component>:<version>`，架构 x86_64。部署全部由 Terraform 完成。详见 [spec 08](docs/specs/08-infrastructure.md) 与 [deploy/README.md](deploy/README.md)。
+
+### 发布一个组件
+
+1. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。
+2. workflow 构建并推送镜像到 primary region（ap-east-1）的 ECR：
+
+```bash
+image=$(deploy/build.sh worker)          # 输出 aws-inventory-discover/worker:<version>
+podman tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+```
+
+3. 修改 `terraform/envs/<env>.tfvars` 中的 `component_versions` → 提 PR → 合并后打 tag → workflow 执行 `terraform apply`。只改了哪个组件的版本，就只发布哪个组件。
+4. 版本包含新的迁移时，apply 之前先用新的 worker 镜像运行 `migrate` 任务（见 deploy/README.md）。
+
+多个组件同时发布、或新增资源类型时，遵守 CLAUDE.md 的「独立发布的兼容规则」：迁移 → worker → planner / API。
 
 ### 首次部署
 
-1. 先只创建镜像仓库与跨 region 复制（复制只对之后推送的镜像生效）：
+1. 先只创建 ECR 仓库与跨 region 复制（复制只对之后推送的镜像生效）：
 
 ```bash
 terraform -chdir=terraform init -backend-config=envs/<env>.backend.hcl
-terraform -chdir=terraform apply -var-file=envs/<env>.tfvars -var image_tag=<tag> -target=aws_ecr_repository.inventory -target=aws_ecr_replication_configuration.inventory
+terraform -chdir=terraform apply -var-file=envs/<env>.tfvars -target=aws_ecr_repository.component -target=aws_ecr_replication_configuration.inventory
 ```
 
-2. 构建并推送镜像（仓库名为 `inventory-<env>-inventory`）：
-
-```bash
-make image
-podman tag inventory:dev <account>.dkr.ecr.ap-east-1.amazonaws.com/inventory-<env>-inventory:<tag>
-podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/inventory-<env>-inventory:<tag>
-```
-
-3. 部署其余资源，定时任务先保持关闭：
-
-```bash
-terraform -chdir=terraform apply -var-file=envs/<env>.tfvars -var image_tag=<tag> -var schedules_enabled=false
-```
-
+2. 构建并推送 4 个组件的镜像（同上）。
+3. 部署其余资源，定时任务先保持关闭：`terraform -chdir=terraform apply -var-file=envs/<env>.tfvars -var schedules_enabled=false`。
 4. 写入 ADFS 账号的 secret（输出 `adfs_secret_arn`），内容为 `{"username": "...", "password": "..."}`。
-5. 执行数据库迁移（见下文），然后用 `schedules_enabled=true`（默认值）再 apply 一次，开启定时扫描与维护任务。
-
-### 每次发布
-
-1. 构建并推送新 tag 的镜像。
-2. 先只注册新的迁移任务定义并执行迁移：
-
-```bash
-terraform -chdir=terraform apply -var-file=envs/<env>.tfvars -var image_tag=<tag> -target=aws_ecs_task_definition.migrate
-aws ecs run-task --cluster inventory-<env>-api --launch-type FARGATE --task-definition inventory-<env>-migrate --network-configuration 'awsvpcConfiguration={subnets=[subnet-...],securityGroups=[sg-...]}'
-```
-
-（子网与安全组见 Terraform 输出 `api_subnets_and_security_group`；等任务退出码为 0 再继续。）
-
-3. 完整 apply，滚动更新 Lambda 与 ECS 服务。迁移需保持向后兼容（旧代码在新表结构上仍可运行）。
+5. 运行 `migrate` 任务，然后用 `schedules_enabled=true`（默认值）再 apply 一次，开启定时扫描与维护任务。
 
 校验 Terraform（不需要 AWS 凭证）：
 
@@ -172,7 +174,7 @@ terraform -chdir=terraform init -backend=false
 terraform -chdir=terraform validate
 ```
 
-ECR 跨 region 复制是账号级的单例配置：同一账号部署多个环境时，只在其中一个 stack 中保留 `manage_ecr_replication = true`。详见 [spec 08](docs/specs/08-infrastructure.md)。
+ECR 跨 region 复制是账号级的单例配置：同一账号部署多个环境时，只在其中一个 stack 中保留 `manage_ecr_replication = true`。
 
 ## 排查问题
 

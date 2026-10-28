@@ -1,4 +1,4 @@
-# Control plane in the home region: image registry, database, Redis, broker, planner,
+# Control plane in the primary region: image registry, database, Redis, broker, planner,
 # state machine, schedules and the API.
 
 data "aws_caller_identity" "current" {}
@@ -6,19 +6,12 @@ data "aws_caller_identity" "current" {}
 locals {
   name_prefix = "inventory-${var.env}"
   account_id  = data.aws_caller_identity.current.account_id
-  home        = var.regions[var.home_region]
+  primary     = var.regions[var.primary_region]
   all_cidrs   = [for r in values(var.regions) : r.cidr_block]
+  # fixed by AWS: IAM / Route 53 APIs, STS for the broker and ec2:DescribeRegions
+  us_east_1    = "us-east-1"
+  scan_regions = sort(keys(var.regions))
 
-  # Queue URLs are derived from the naming convention (not module outputs) so every cell
-  # can receive the full cell list without a dependency cycle.
-  cells = [
-    for region, cfg in var.regions : {
-      region              = region
-      endpoints           = cfg.endpoints
-      scheduled_queue_url = "https://sqs.${region}.amazonaws.com/${local.account_id}/${local.name_prefix}-scheduled"
-      ondemand_queue_url  = "https://sqs.${region}.amazonaws.com/${local.account_id}/${local.name_prefix}-ondemand"
-    }
-  ]
   queue_arns = flatten([
     for region in keys(var.regions) : [
       for kind in ["scheduled", "ondemand"] :
@@ -26,30 +19,86 @@ locals {
     ]
   ])
 
-  # INVENTORY_* settings shared by every component (see inventory/config.py).
-  # Keep it compact: Lambda limits all environment variables to 4 KB in total.
-  common_env = {
-    INVENTORY_ENVIRONMENT          = var.env
-    INVENTORY_LOG_LEVEL            = "INFO"
-    INVENTORY_HOME_REGION          = var.home_region
-    INVENTORY_GLOBAL_HOME_REGION   = var.global_home_region
-    INVENTORY_SUPPORTED_REGIONS    = jsonencode(keys(var.regions))
-    INVENTORY_CELLS                = jsonencode(local.cells)
-    INVENTORY_BROKER_FUNCTION_NAME = "${local.name_prefix}-broker"
-    INVENTORY_DATABASE_SECRET_ARN  = aws_rds_cluster.inventory.master_user_secret[0].secret_arn
-    INVENTORY_DATABASE_HOST        = aws_db_proxy.inventory.endpoint
+  # --- images: aws-inventory-discover/<component>:<version>, pushed to the primary region
+  components      = toset(["broker", "planner", "api", "worker"])
+  image_namespace = "aws-inventory-discover"
+  image = {
+    for c in local.components : c => {
+      for region in keys(var.regions) :
+      region => "${local.account_id}.dkr.ecr.${region}.amazonaws.com/${local.image_namespace}/${c}:${var.component_versions[c]}"
+    }
   }
-  # ECS awslogs does not extract EMF; Lambda does
-  ecs_env = merge(local.common_env, { INVENTORY_METRICS_MODE = "api" })
 
-  repository = "${local.name_prefix}-inventory"
-  image      = { for region in keys(var.regions) : region => "${local.account_id}.dkr.ecr.${region}.amazonaws.com/${local.repository}:${var.image_tag}" }
+  # --- INVENTORY_ENDPOINTS: endpoint-specific DNS for cross-region calls only (private DNS is
+  # not shared over VPC peering); same-region calls use the default DNS.
+  dispatcher_endpoints = {
+    for region, cfg in var.regions : region => merge(
+      { sqs = cfg.endpoints["sqs"] },
+      region == local.us_east_1 ? { ec2 = cfg.endpoints["ec2"] } : {},
+    ) if region != var.primary_region
+  }
+  broker_endpoints = var.primary_region == local.us_east_1 ? {} : {
+    (local.us_east_1) = { sts = var.regions[local.us_east_1].endpoints["sts"] }
+  }
+  worker_remote_endpoints = {
+    (var.primary_region) = {
+      lambda         = local.primary.endpoints["lambda"]
+      secretsmanager = local.primary.endpoints["secretsmanager"]
+    }
+  }
+
+  # --- environment per component (see inventory/config.py); Lambda allows 4 KB in total
+  base_env = {
+    INVENTORY_ENVIRONMENT    = var.env
+    INVENTORY_LOG_LEVEL      = "INFO"
+    INVENTORY_PRIMARY_REGION = var.primary_region
+  }
+  database_env = {
+    INVENTORY_DATABASE_SECRET_ARN = aws_rds_cluster.inventory.master_user_secret[0].secret_arn
+    INVENTORY_DATABASE_HOST       = aws_db_proxy.inventory.endpoint
+  }
+  dispatcher_env = merge(local.database_env, {
+    INVENTORY_SCAN_REGIONS = jsonencode(local.scan_regions)
+    INVENTORY_ENDPOINTS    = jsonencode(local.dispatcher_endpoints)
+  })
+  broker_env = merge(
+    local.base_env,
+    length(local.broker_endpoints) > 0 ? { INVENTORY_ENDPOINTS = jsonencode(local.broker_endpoints) } : {},
+    {
+      BROKER_ADFS_IDP_URL                = var.adfs_idp_url
+      BROKER_ADFS_CREDENTIALS_SECRET_ARN = aws_secretsmanager_secret.adfs.arn
+      BROKER_REDIS_URL                   = "rediss://${aws_elasticache_replication_group.broker.primary_endpoint_address}:6379/0"
+      BROKER_REDIS_AUTH_SECRET_ARN       = aws_secretsmanager_secret.redis_auth.arn
+      BROKER_KMS_KEY_ID                  = aws_kms_key.broker.arn
+    },
+  )
+  planner_env = merge(local.base_env, local.dispatcher_env, {
+    PLANNER_ACCOUNT_DIRECTORY_FUNCTION_NAME = var.account_directory_function_name
+    PLANNER_DELETED_RETENTION_DAYS          = tostring(var.deleted_retention_days)
+  })
+  # ECS awslogs does not extract EMF; Lambda does
+  api_env = merge(local.base_env, local.dispatcher_env, {
+    INVENTORY_METRICS_MODE = "api"
+    API_TRACING_ENABLED    = tostring(var.api_tracing_enabled)
+  })
+  worker_env = {
+    for region in keys(var.regions) : region => merge(
+      local.base_env,
+      local.database_env,
+      region == var.primary_region ? {} : { INVENTORY_ENDPOINTS = jsonencode(local.worker_remote_endpoints) },
+      { INVENTORY_METRICS_MODE = "api", WORKER_REGION = region },
+    )
+  }
+  migrate_env = merge(local.base_env, local.database_env)
 }
 
-# --------------------------------------------------------------------------- image
+# --------------------------------------------------------------------------- images
 
-resource "aws_ecr_repository" "inventory" {
-  name                 = local.repository
+# The release workflow pushes images to the primary region; workers pull from their own
+# region through replication.
+resource "aws_ecr_repository" "component" {
+  for_each             = local.components
+  name                 = "${local.image_namespace}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
   image_scanning_configuration {
     scan_on_push = true
@@ -61,14 +110,14 @@ resource "aws_ecr_replication_configuration" "inventory" {
   replication_configuration {
     rule {
       dynamic "destination" {
-        for_each = setsubtract(keys(var.regions), [var.home_region])
+        for_each = setsubtract(keys(var.regions), [var.primary_region])
         content {
           region      = destination.value
           registry_id = local.account_id
         }
       }
       repository_filter {
-        filter      = "inventory-"
+        filter      = "${local.image_namespace}/worker"
         filter_type = "PREFIX_MATCH"
       }
     }
@@ -80,7 +129,7 @@ resource "aws_ecr_replication_configuration" "inventory" {
 resource "aws_security_group" "lambda" {
   name        = "${local.name_prefix}-lambda"
   description = "Broker and planner Lambdas"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   egress {
     from_port   = 0
     to_port     = 0
@@ -92,7 +141,7 @@ resource "aws_security_group" "lambda" {
 resource "aws_security_group" "database" {
   name        = "${local.name_prefix}-database"
   description = "Aurora and RDS Proxy: reachable from every region over peering"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   ingress {
     from_port   = 5432
     to_port     = 5432
@@ -110,7 +159,7 @@ resource "aws_security_group" "database" {
 resource "aws_security_group" "redis" {
   name        = "${local.name_prefix}-redis"
   description = "Broker cache"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   ingress {
     from_port       = 6379
     to_port         = 6379
@@ -123,7 +172,7 @@ resource "aws_security_group" "redis" {
 
 resource "aws_db_subnet_group" "inventory" {
   name       = local.name_prefix
-  subnet_ids = local.home.private_subnet_ids
+  subnet_ids = local.primary.private_subnet_ids
 }
 
 resource "aws_rds_cluster" "inventory" {
@@ -191,7 +240,7 @@ resource "aws_db_proxy" "inventory" {
   name                   = local.name_prefix
   engine_family          = "POSTGRESQL"
   role_arn               = aws_iam_role.db_proxy.arn
-  vpc_subnet_ids         = local.home.private_subnet_ids
+  vpc_subnet_ids         = local.primary.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.database.id]
   require_tls            = true
 
@@ -243,7 +292,7 @@ resource "aws_secretsmanager_secret_version" "redis_auth" {
 
 resource "aws_elasticache_subnet_group" "broker" {
   name       = "${local.name_prefix}-broker"
-  subnet_ids = local.home.private_subnet_ids
+  subnet_ids = local.primary.private_subnet_ids
 }
 
 resource "aws_elasticache_replication_group" "broker" {
@@ -309,24 +358,17 @@ resource "aws_iam_role_policy" "broker" {
 
 module "broker" {
   source               = "./modules/lambda_fn"
-  name                 = "${local.name_prefix}-broker"
-  image_uri            = local.image[var.home_region]
-  command              = ["inventory.handlers.broker_lambda.handler"]
+  name                 = "${local.name_prefix}-adfs-broker"
+  image_uri            = local.image["broker"][var.primary_region]
+  architecture         = var.lambda_architecture
   role_arn             = aws_iam_role.broker.arn
   timeout              = 60
   memory_size          = 512
   reserved_concurrency = 100
-  subnet_ids           = local.home.private_subnet_ids
+  subnet_ids           = local.primary.private_subnet_ids
   security_group_ids   = [aws_security_group.lambda.id]
   log_retention_days   = var.log_retention_days
-  environment = merge(local.common_env, {
-    BROKER_ADFS_IDP_URL                = var.adfs_idp_url
-    BROKER_ADFS_CREDENTIALS_SECRET_ARN = aws_secretsmanager_secret.adfs.arn
-    BROKER_REDIS_URL                   = "rediss://${aws_elasticache_replication_group.broker.primary_endpoint_address}:6379/0"
-    BROKER_REDIS_AUTH_SECRET_ARN       = aws_secretsmanager_secret.redis_auth.arn
-    BROKER_KMS_KEY_ID                  = aws_kms_key.broker.arn
-    BROKER_STS_REGION                  = var.broker_sts_region
-  })
+  environment          = local.broker_env
 }
 
 # --------------------------------------------------------------------------- planner
@@ -387,17 +429,15 @@ resource "aws_iam_role_policy" "planner" {
 module "planner" {
   source             = "./modules/lambda_fn"
   name               = "${local.name_prefix}-planner"
-  image_uri          = local.image[var.home_region]
-  command            = ["inventory.handlers.planner_lambda.handler"]
+  image_uri          = local.image["planner"][var.primary_region]
+  architecture       = var.lambda_architecture
   role_arn           = aws_iam_role.planner.arn
   timeout            = 900
   memory_size        = 1024
-  subnet_ids         = local.home.private_subnet_ids
+  subnet_ids         = local.primary.private_subnet_ids
   security_group_ids = [aws_security_group.lambda.id]
   log_retention_days = var.log_retention_days
-  environment = merge(local.common_env, {
-    PLANNER_ACCOUNT_DIRECTORY_FUNCTION_NAME = var.account_directory_function_name
-  })
+  environment        = local.planner_env
 }
 
 # --------------------------------------------------------------------------- state machine & schedules
@@ -591,7 +631,7 @@ resource "aws_iam_role_policy" "api_task" {
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb"
   description = "Internal API load balancer"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   ingress {
     from_port   = 80
     to_port     = 80
@@ -609,7 +649,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "api" {
   name        = "${local.name_prefix}-api"
   description = "API tasks"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   ingress {
     from_port       = 8080
     to_port         = 8080
@@ -628,7 +668,7 @@ resource "aws_lb" "api" {
   name               = "${local.name_prefix}-api"
   internal           = true
   load_balancer_type = "application"
-  subnets            = local.home.private_subnet_ids
+  subnets            = local.primary.private_subnet_ids
   security_groups    = [aws_security_group.alb.id]
   idle_timeout       = 60
 }
@@ -638,7 +678,7 @@ resource "aws_lb_target_group" "api" {
   port        = 8080
   protocol    = "HTTP"
   target_type = "ip"
-  vpc_id      = local.home.vpc_id
+  vpc_id      = local.primary.vpc_id
   health_check {
     path    = "/readyz"
     matcher = "200"
@@ -657,24 +697,16 @@ resource "aws_lb_listener" "api" {
 
 locals {
   api_container = {
-    name       = "api"
-    image      = local.image[var.home_region]
-    essential  = true
-    entryPoint = ["python", "-m", "uvicorn"]
-    command = [
-      "--factory", "inventory.api.app:create_app", "--host", "0.0.0.0", "--port", "8080",
-      "--workers", "1", "--no-access-log",
-    ]
+    name         = "api"
+    image        = local.image["api"][var.primary_region]
+    essential    = true
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
-    environment = [
-      for k, v in merge(local.ecs_env, { API_TRACING_ENABLED = tostring(var.api_tracing_enabled) }) :
-      { name = k, value = v }
-    ]
+    environment  = [for k, v in local.api_env : { name = k, value = v }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.api.name
-        awslogs-region        = var.home_region
+        awslogs-region        = var.primary_region
         awslogs-stream-prefix = "api"
       }
     }
@@ -688,7 +720,7 @@ locals {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.api.name
-        awslogs-region        = var.home_region
+        awslogs-region        = var.primary_region
         awslogs-stream-prefix = "adot"
       }
     }
@@ -705,7 +737,7 @@ resource "aws_ecs_task_definition" "api" {
   task_role_arn            = aws_iam_role.api_task.arn
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = "X86_64"
   }
   # encode each container separately: the two containers have different shapes
   container_definitions = "[${join(",", concat(
@@ -722,7 +754,7 @@ resource "aws_ecs_service" "api" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = local.home.private_subnet_ids
+    subnets          = local.primary.private_subnet_ids
     security_groups  = [aws_security_group.api.id]
     assign_public_ip = false
   }
@@ -738,7 +770,8 @@ resource "aws_ecs_service" "api" {
 
 # --------------------------------------------------------------------------- migrations
 
-# One-off task: run before rolling out a new image (see README "部署").
+# One-off task: run before rolling out a release that contains migrations (deploy/README.md).
+# It uses the worker image: for a new resource type the worker is released first.
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${local.name_prefix}-migrate"
   requires_compatibilities = ["FARGATE"]
@@ -749,20 +782,20 @@ resource "aws_ecs_task_definition" "migrate" {
   task_role_arn            = aws_iam_role.api_task.arn
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = "X86_64"
   }
   container_definitions = jsonencode([{
     name        = "migrate"
-    image       = local.image[var.home_region]
+    image       = local.image["worker"][var.primary_region]
     essential   = true
     entryPoint  = ["python", "-m", "alembic"]
     command     = ["upgrade", "head"]
-    environment = [for k, v in local.common_env : { name = k, value = v }]
+    environment = [for k, v in local.migrate_env : { name = k, value = v }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.api.name
-        awslogs-region        = var.home_region
+        awslogs-region        = var.primary_region
         awslogs-stream-prefix = "migrate"
       }
     }

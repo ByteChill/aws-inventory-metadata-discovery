@@ -60,8 +60,8 @@ class Dispatcher(Protocol):
 
 `SqsDirectDispatcher`：
 
-- 目标队列：`cells[region].<kind>_queue_url`；`region == 'global'` 时使用 `global_home_region` 的 cell。
-- SQS client 经 `ClientFactory(service="sqs", region=目标 region)` 创建，跨 region 时自动使用 cell 中配置的 endpoint-specific DNS。
+- 目标队列：按名字 `inventory-<env>-<kind>` 在目标 region 用 `GetQueueUrl` 解析并缓存（`QueueLocator`）；`region == 'global'` 时投递到 us-east-1。
+- SQS client 经 `ClientFactory(service="sqs", region=目标 region)` 创建，跨 region 时使用 `INVENTORY_ENDPOINTS` 中的专用 DNS。解析队列失败时该批 task 记为投递失败。
 - 使用 `send_message_batch`（每批 10 条），逐条检查 `Failed` 并汇总。
 - `retry` 消息（spec 06）通过同一接口发送，附带 `DelaySeconds`。
 
@@ -90,22 +90,24 @@ class Scheduler:
 
 ### 3.1 `enabled_regions`
 
-1. 读 `account_region`；`checked_at` 在 `max_age` 以内则直接使用。
-2. 否则用该账号的凭证调用 `ec2.describe_regions(AllRegions=False)`，API region 取 `home_region`。
-3. 若 home_region 对该账号未启用（`OptInRequired` / `AuthFailure`），改用 `supported_regions` 中第一个默认启用的 region（通过 peering endpoint 访问）重试。
-4. 结果与 `supported_regions` 取交集，写回 `account_region`（同时写入未启用的受支持 region，`enabled=false`）。
+1. 读 `account_region`；`checked_at` 在 `max_age` 以内、且记录的 region 集合与当前 `scan_regions` 相同时直接使用（新增或去掉扫描 region 后缓存立即失效）。
+2. 否则用该账号的凭证在 **us-east-1** 调用 `ec2.describe_regions(AllRegions=False)`（所有账号默认启用 us-east-1；primary region 是 opt-in）。
+3. 结果与 `scan_regions` 取交集，写回 `account_region`（同时写入未启用的扫描 region，`enabled=false`）。
 
 ### 3.2 `expand`
 
 | scope | 生成的 task |
 |---|---|
 | `all` | 由 planner 按账号批次调用 `expand(account_id=...)`，不直接展开 |
-| `account_id` | 每个启用的受支持 region 一个，再加一个 `global`（若有可用的 global 类型） |
-| `account_id + region` | 一个 |
-| `account_id + region + resource_type` | 一个，`resource_types=[type]` |
+| `account_id` | 每个启用的扫描 region 一个，再加一个 `global` |
+| `account_id + region` | 一个；非 `global` 的 region 必须在 `enabled_regions(account)` 中 |
+| `account_id + resource_type` | regional 类型：`enabled_regions(account)` 的每个 region 一个，`resource_types=[type]`，为空时抛 `BadRequestError`；global 类型：一个 `global` |
+| `account_id + region + resource_type` | 一个，`resource_types=[type]`；region 规则同上 |
 | `arn` | 不经队列，由 API 直接处理（spec 07） |
 
 task 的 `queue`：定时任务为 `scheduled`，API 为 `ondemand`。
+
+`validate(scope)` 只做不依赖账号的检查（region 是扫描 region 或 `global`、类型已注册、global/regional 匹配），API 在调用 `expand` 前先调用它；依赖账号已启用 region 的检查在 `expand` 中进行。两者都抛 `BadRequestError`。
 
 ### 3.3 `submit`
 
@@ -170,19 +172,18 @@ WaitLoop: Wait 300s → CheckProgress ──done?──► Finalize ──► Do
 
 1. `timeout_stale(stale_before = now - 30min)`：心跳过期的 task 置为 `timed_out`，并对受影响的 job 调用 `refresh_job_status`（主要用于 API job，API 进程中途退出时的兜底）。
 2. 对已过 `deadline_at` 且仍未终态的 API job，执行与 `finalize` 相同的超时处理。
-3. `purge_deleted(older_than = now - 30d)`，分批执行直到本次调用剩余时间不足 30 秒。
+3. `purge_deleted(older_than = now - deleted_retention_days)`，分批执行直到本次调用剩余时间不足 30 秒。
 
 ## 6. `AccountDirectoryClient`
 
 ```python
 class AccountDirectoryClient:
-    def list_accounts(self) -> list[str]: ...
+    def list_accounts(self) -> list[DirectoryAccount]: ...
 ```
 
-⚠️ account-directory λ 的实际请求/响应格式**待确认**。先按以下假设实现，接入时只改这个类与对应 fixture：
-
 - 请求：`{}`（fixture：`planner/account_directory.request.json`）
-- 响应：`{"accounts": [{"account_id": "123456789012", "status": "ACTIVE"}]}`，只取 `status == "ACTIVE"` 的账号（fixture：`planner/account_directory.response.json`）
+- 响应：`{"accounts": [{"account_id": "123456789012", "name": "", "eim": "20142209", "type": "dev", "status": "ACTIVE"}]}`（fixture：`planner/account_directory.response.json`）。`type` 为 `dev | preprod | prod`，在本系统中叫 `account_type`；空字符串视为未设置。
+- `list_targets` 把列出的全部账号写入 `account` 表（spec 02 §2.3.1），只扫描 `status == "ACTIVE"` 的账号。目录中不再出现的账号保留原记录，只是不扫描。
 
 ## 7. 配置（`PlannerSettings`，前缀 `PLANNER_`）
 
@@ -192,7 +193,7 @@ class AccountDirectoryClient:
 | `job_deadline_minutes` | 210 | |
 | `account_region_max_age_hours` | 24 | |
 | `task_stale_minutes` | 30 | |
-| `deleted_retention_days` | 30 | |
+| `deleted_retention_days` | 180 | 软删除资源的保留天数（≥ 1），Terraform 变量 `deleted_retention_days` |
 
 ## 测试要求
 
@@ -200,9 +201,9 @@ class AccountDirectoryClient:
 |---|---|
 | 每个 action 的输入输出 | `planner/<action>.event.json` / `.response.json` |
 | `create_job`：重叠时 skipped；当天第一轮 full_refresh | 集成（PG） |
-| `enabled_regions`：缓存命中、过期刷新、home region 未启用时回退 | moto + PG；`planner/describe_regions.*.json` |
-| `expand`：表 §3.2 的每种 scope；global 类型全部缺 endpoint 时不生成 global task | `foundation/settings.local.json` |
-| `SqsDirectDispatcher`：按 region 路由、global 路由到 home region、部分失败 | moto SQS（4 个 region 各建队列） |
+| `enabled_regions`：缓存命中、过期刷新、扫描 region 变化时失效、固定在 us-east-1 调用 | moto + PG |
+| `expand`：表 §3.2 的每种 scope；账号级总是生成 global task | `foundation/settings.local.json` |
+| `SqsDirectDispatcher`：按 region 路由、global 路由到 us-east-1、部分失败 | moto SQS（4 个 region 各建队列） |
 | `submit`：投递失败的 task 被标记为 `DISPATCH_FAILED` | moto + PG |
 | `maintenance`：stale task 超时、purge 分批 | PG |
 | ASL 文件是合法 JSON，且所有 `Resource` 占位符都在 Terraform 的 `templatefile` 变量中 | — |
@@ -225,3 +226,19 @@ class AccountDirectoryClient:
 - 状态机：`CreateJob` 失败进入 `Fail`；Map 失败 → `MarkDispatchedWithError`（把错误写入 `scan_job.error`，job 最终为 `partial`）→ 继续等待；`CheckProgress` 失败回到 `WaitForWorkers`（仍受 deadline 约束）。
 - `finalize` 带 error 且未到 deadline 时只记录错误、不超时 task（避免一次瞬时故障丢掉整轮工作），之后由 `maintenance` 收尾；`check_progress` 与 `maintenance` 都会调用 `refresh_job_status` 作为兜底。`maintenance` 也处理过期的定时 job（状态机异常退出时）。
 - `task_stale_minutes` 默认 10（心跳 120 秒，5 次未更新即视为失联）；`PlannerSettings.account_directory_function_name` 为必填。
+
+### 第三轮修订（类型级 scope 不再要求 region）
+
+- `account_id + resource_type` 合法：regional 类型展开到「账号已启用 region ∩ `supported_regions` ∩ 该类型 endpoint 可用的 region」，交集为空时报错；global 类型展开为 `global`。
+- 指定的非 `global` region 必须对该账号已启用；指定类型时该类型在该 region 的 endpoint 必须可用（之前只在 worker 中记为 `skipped_no_endpoint`）。
+- 新增 `Scheduler.validate(scope)`，替代 `validate_region` / `validate_type`。
+
+### 第四轮修订（软删除保留期）
+
+- `deleted_retention_days` 默认值由 30 改为 180，并要求 ≥ 1；Terraform 新增变量 `deleted_retention_days`（默认 180），写入 planner λ 的 `PLANNER_DELETED_RETENTION_DAYS`。
+
+### 第五轮修订（发布与配置，spec 08 R4–R6）
+
+- `home_region` → `primary_region`，`supported_regions` → `scan_regions`；删除 `cells`：队列按名字查找。
+- `DescribeRegions` 固定在 us-east-1 调用，去掉逐个 region 回退；`account_region` 缓存在扫描 region 集合变化时失效。
+- 删除 endpoint 可用性判断：账号级扫描总是生成 global task；类型级 scope 不再检查 endpoint。`Scheduler` 不再依赖 `EndpointResolver`。

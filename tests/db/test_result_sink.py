@@ -77,9 +77,9 @@ def test_apply_refresh_statuses(db: Engine) -> None:
 
 
 def test_record_skip(db: Engine) -> None:
-    PostgresResultSink(db).record_skip(SCOPE, TypeStatus.SKIPPED_NO_ENDPOINT, "job", None)
+    PostgresResultSink(db).record_skip(SCOPE, TypeStatus.AUTH_DENIED, "job", None)
     with db.connect() as conn:
-        assert conn.execute(select(scope_state.c.status)).scalar_one() == "skipped_no_endpoint"
+        assert conn.execute(select(scope_state.c.status)).scalar_one() == "auth_denied"
 
 
 @pytest.fixture

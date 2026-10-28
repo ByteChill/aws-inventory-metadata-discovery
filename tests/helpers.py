@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 FIXTURES = Path(__file__).parent / "fixtures"
-TEXT_SUFFIXES = {".xml", ".html", ".txt"}
+TEXT_SUFFIXES = {".xml", ".html", ".txt", ".pem"}
 
 
 def fixture_path(rel_path: str) -> Path:

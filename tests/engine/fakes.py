@@ -81,7 +81,6 @@ def make_registry() -> tuple[Registry, dict[str, type[FakeCollector]]]:
 
     class Solo(FakeCollector):
         resource_type = "Test::Solo"
-        service = "solo"  # not configured in any cell -> skipped_no_endpoint
         arn_pattern = re.compile(
             r"^arn:aws:test:(?P<region>[^:]+):(?P<account>\d{12}):thing/(?P<id>s-\d+)$"
         )

@@ -18,6 +18,8 @@
 |---|---|---|
 | `X-Request-ID` | 请求（可选）/ 响应（总有） | 客户端可传入自己的 ID（≤128 字符，`[A-Za-z0-9._-]`），否则服务端生成 ULID。该 ID 会出现在本次调用产生的所有日志中，包括 worker 与 broker |
 | `X-Trace-Id` | 响应 | 开启 tracing（`API_TRACING_ENABLED=true`）时返回 X-Ray trace id |
+| `Authorization: Bearer <jwt>` | 请求 | 用户：内部 SSO 签发的 JWT（§1.5） |
+| `X-API-Key: inv_...` | 请求 | 服务：API key（§1.5、§3.13） |
 
 ### 1.2 错误格式
 
@@ -27,9 +29,9 @@
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "region is required when resource_type is set",
+    "message": "account_id is required",
     "request_id": "01JBX6Y7Z8A9B0C1D2E3F4G5H6",
-    "details": [{"loc": ["body", "scope", "region"], "msg": "field required"}]
+    "details": [{"loc": ["body", "scope"], "msg": "Value error, account_id is required"}]
   }
 }
 ```
@@ -37,9 +39,11 @@
 | HTTP | code | 场景 |
 |---|---|---|
 | 400 | `BAD_REQUEST` | 无法解析的请求，如非法 cursor |
+| 401 | `UNAUTHENTICATED` | 没有凭证、凭证无效 / 过期 / 已撤销（§1.5） |
+| 403 | `FORBIDDEN` | 已认证但没有该接口需要的权限（§1.5） |
 | 404 | `NOT_FOUND` | 资源或 job 不存在 |
 | 422 | `VALIDATION_ERROR` | 参数校验失败 |
-| 403 | `ACCOUNT_ACCESS_DENIED` | broker 拒绝该账号（仅同步刷新时可能出现） |
+| 403 | `ACCOUNT_ACCESS_DENIED` | broker 拒绝该账号（刷新结果中的 `error.code`） |
 | 501 | `NOT_IMPLEMENTED` | 预留接口，如 `/v1/history/*` |
 | 502 | `UPSTREAM_ERROR` | AWS 或 broker 返回不可重试错误 |
 | 503 | `UPSTREAM_THROTTLED` | AWS 或 broker 限流，客户端可稍后重试 |
@@ -64,6 +68,21 @@
 
 触发类接口支持 `wait_seconds`（0–25）。在时限内 job 到达终态返回 `200`，否则返回 `202` 与 job 当前状态，客户端用 `GET /v1/scans/{job_id}` 继续查询。
 
+### 1.5 认证与权限
+
+`API_AUTH_MODE=disabled`（默认）时不校验凭证，所有调用方都是拥有全部权限的 `anonymous`。`enforced` 时每个 `/v1` 请求必须带且只带一种凭证：
+
+- **用户**：`Authorization: Bearer <jwt>`，由内部 SSO 签发；校验签名（JWKS）、`exp`、`iss`、`aud`。用户名（默认 claim `preferred_username`）必须是 8 位数字；角色来自 `roles` claim，没有可识别的角色时为 `viewer`。
+- **服务**：`X-API-Key`，由 admin 通过 §3.13 创建，角色在创建时指定；只能在 `enforced` 时创建和管理（`disabled` 时所有调用方都是 admin，那时创建的 key 会在开启认证后继续有效，因此拒绝，返回 403）。
+
+| 角色 | 权限 |
+|---|---|
+| `viewer` | 读资源、统计、覆盖情况（`resources:read`） |
+| `operator` | viewer + 读扫描 job（`scans:read`）、触发扫描与刷新（`scans:write`） |
+| `admin` | operator + 管理 API key（`api_keys:manage`） |
+
+没有凭证或凭证无效返回 401 `UNAUTHENTICATED`（响应头 `WWW-Authenticate: Bearer`）；权限不足返回 403 `FORBIDDEN`。`/healthz`、`/readyz`、`/ui/`、`/docs`、`/openapi.json` 不需要认证。每个接口需要的权限见 [spec 10 §1](specs/10-web-ui-and-auth.md)。
+
 ## 2. 数据结构
 
 ### 2.1 Resource
@@ -83,7 +102,10 @@
   "last_changed_at": "2026-10-27T04:03:44Z",
   "observed_at": "2026-10-27T04:03:44Z",
   "deleted_at": null,
-  "verified_at": "2026-10-27T08:02:10Z"
+  "verified_at": "2026-10-27T08:02:10Z",
+  "account_name": "payments-dev",
+  "eim": "20142209",
+  "account_type": "dev"
 }
 ```
 
@@ -94,7 +116,8 @@
 | `observed_at` | 这份数据从 AWS 读取的时间 |
 | `last_changed_at` | 内容最后一次变化的时间 |
 | `verified_at` | 所属 scope 最后一次成功完整扫描的时间（来自 `scope_state`），表示数据至少在该时刻是准确的。可能早于 `observed_at`（单 ARN 刷新只更新 `observed_at`） |
-| `deleted_at` | 非空表示资源在 AWS 已不存在（软删除，保留 30 天） |
+| `deleted_at` | 非空表示资源在 AWS 已不存在（软删除，默认保留 180 天，可配置） |
+| `account_name` / `eim` / `account_type` | 所属账号在 account-directory 中的名称、EIM（账号的虚拟归属）与类型（`dev`/`preprod`/`prod`），见 §3.15。账号不在目录中时为 `null` |
 
 ### 2.2 ScanScope
 
@@ -106,10 +129,16 @@
 |---|---|
 | `account_id` | 该账号所有已启用受支持 region（含 global）的所有类型 |
 | `account_id` + `region` | 该 region 的所有类型；`region` 可为 `global` |
+| `account_id` + `resource_type` | 该类型在所有可扫描 region 中扫描：regional 类型取「账号已启用的 region ∩ 扫描 region（部署了 worker 的 region）」，每个 region 一个 task；global 类型即 `global` |
 | `account_id` + `region` + `resource_type` | 该 region 的某一类型 |
 | `arn`（单独使用） | 单个资源；等价于 `POST /v1/resources/refresh` 只传一个 ARN |
 
-校验：有 `resource_type` 必须有 `region`；`arn` 不能与其他字段同时出现；`region` 必须在受支持列表中；`resource_type` 必须已注册且适用于该 region（global 类型只能配 `global`）。
+校验（不通过返回 422 `VALIDATION_ERROR`，不创建 job）：
+
+- `arn` 不能与其他字段同时出现；其余组合必须有 `account_id`。
+- `region` 必须是 `global` 或扫描 region 之一；非 `global` 的 `region` 还必须是该账号已启用的 region（`account_region`，缓存过期时调用 `describe_regions` 刷新）。
+- `resource_type` 必须已注册；指定 `region` 时须适用于该 region（global 类型只能配 `global`）。
+- 只有 `resource_type` 没有 `region` 时，上述交集为空即返回 422（该类型对此账号不可扫描）。
 
 ### 2.3 ScanJob
 
@@ -120,6 +149,7 @@
   "scope": {"account_id": "123456789012", "region": "eu-west-1"},
   "status": "running",
   "request_id": "01JBX6Y7Z8A9B0C1D2E3F4G5H6",
+  "requested_by": "10000002",
   "deduplicated": false,
   "created_at": "2026-10-27T08:00:00Z",
   "started_at": "2026-10-27T08:00:01Z",
@@ -131,6 +161,7 @@
 
 - `status`：`queued | running | succeeded | partial | failed | timed_out`。`partial` 表示部分 task 或部分类型失败。
 - `tasks` 仅在 `include_tasks=true` 时返回，元素为 ScanTask。
+- `requested_by`：触发者，用户为 8 位用户名，API key 为 `apikey:<key_id>`，关闭认证时为 `anonymous`；定时扫描为 `null`。
 
 ### 2.4 ScanTask
 
@@ -146,12 +177,16 @@
     "AWS::EC2::Instance": {"status": "succeeded", "created": 1, "updated": 3, "deleted": 0, "unchanged": 120, "duration_ms": 2310},
     "AWS::ECS::Service": {"status": "failed", "error_code": "THROTTLED", "error_message": "Rate exceeded"}
   },
+  "error_code": null,
+  "error_message": null,
   "started_at": "2026-10-27T08:00:02Z",
   "finished_at": "2026-10-27T08:02:40Z"
 }
 ```
 
 `status`：`queued | running | retrying | succeeded | partial | failed | auth_denied | timed_out`。
+
+`error_code` / `error_message`：task 整体失败的原因（例如 `DISPATCH_FAILED`、`AUTH_DENIED`、超时），与某个类型无关；单个类型的错误在 `result` 中。
 
 ## 3. 接口
 
@@ -162,6 +197,8 @@
 | `account_id` | string，可重复 | |
 | `region` | string，可重复 | 包括 `global` |
 | `resource_type` | string，可重复 | |
+| `eim` | string，可重复 | 所属账号的 EIM |
+| `account_type` | `dev` \| `preprod` \| `prod`，可重复 | 所属账号的类型 |
 | `tag` | string，可重复 | `Key=Value` 精确匹配（在第一个 `=` 处分割）；只写 `Key` 表示存在该 tag。key 含 `=` 时请用 `POST /v1/resources/search` |
 | `name_prefix` | string | |
 | `changed_since` | datetime | `last_changed_at >= changed_since` |
@@ -173,6 +210,22 @@
 
 响应 200：`Page[Resource]`。
 
+#### 路径形式
+
+按 scope 层级获取资源，路径中的段等价于对应的单值过滤条件；其余参数（`eim`、`account_type`、`tag`、`name_prefix`、`changed_since`、`include_deleted`、`view`、`sort`、`order`、`limit`、`cursor`、`with_total`）与上表相同。
+
+| 路径 | 等价于 | 响应 |
+|---|---|---|
+| `GET /v1/resources/all` | 不带 scope 过滤的 `GET /v1/resources` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}` | `account_id=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}` | `account_id=…&region=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}/{resource_type}` | `account_id=…&region=…&resource_type=…` | `Page[Resource]` |
+| `GET /v1/resources/{account_id}/{region}/{arn}` | `GET /v1/resources/by-arn?arn=…`（只接受 `include_deleted`） | `Resource`（full 视图） |
+
+- `account_id` 必须是 12 位数字，否则 404；`region` 为 `global` 或扫描 region 之一，否则 422；`resource_type` 必须已注册且与 region 匹配（global 类型只能配 `global`），否则 422。
+- 第三段以 `arn:` 开头时按 ARN 处理，ARN 中的 `/` 原样放在路径中（如 `/v1/resources/123456789012/eu-west-1/arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0a`）。资源不属于路径中的账号与 region（global 资源为 `global`）时返回 404。
+- `cursor` 与发出它的路径绑定，换到其他路径使用返回 400。
+
 ### 3.2 `POST /v1/resources/search` 资源搜索
 
 GET 接口的完整版，过滤条件放在 body 中：
@@ -182,6 +235,8 @@ GET 接口的完整版，过滤条件放在 body 中：
   "account_ids": ["123456789012"],
   "regions": ["eu-west-1"],
   "resource_types": ["AWS::EC2::Instance"],
+  "eims": ["20142209"],
+  "account_types": ["prod"],
   "tags": {"Env": "prod"},
   "tag_keys": ["Owner"],
   "name_prefix": "web-",
@@ -214,8 +269,8 @@ GET 接口的完整版，过滤条件放在 body 中：
 
 | 参数 | 说明 |
 |---|---|
-| `group_by` | 逗号分隔，取值 `account_id`、`region`、`resource_type` 的任意组合；默认 `resource_type` |
-| `account_id` / `region` / `resource_type` | 可重复，过滤 |
+| `group_by` | 逗号分隔，取值 `account_id`、`region`、`resource_type`、`eim`、`account_type` 的任意组合；默认 `resource_type`。不在账号目录中的账号，`eim` / `account_type` 分组为 `null` |
+| `account_id` / `region` / `resource_type` / `eim` / `account_type` | 可重复，过滤 |
 | `include_deleted` | 默认 false |
 
 ```json
@@ -228,7 +283,7 @@ GET 接口的完整版，过滤条件放在 body 中：
 }
 ```
 
-不带 tag/name 等过滤时直接读 `scope_state` 预聚合结果；否则走 `COUNT`。
+不带 tag/name 等过滤时直接读 `scope_state` 预聚合结果（EIM / 账号类型过滤与分组同样适用）；否则走 `COUNT`。
 
 ### 3.5 `POST /v1/resources/refresh` 刷新资源
 
@@ -236,8 +291,8 @@ GET 接口的完整版，过滤条件放在 body 中：
 {"arns": ["arn:aws:ec2:eu-west-1:123456789012:instance/i-0abc123def4567890"], "wait_seconds": 20}
 ```
 
-- `arns`：1–100 个（重复的会被去重）。≤20 个时，能直达目标 endpoint 的在 API 进程内执行，其余由目标 region 的 worker 执行；>20 个全部转为异步（立即返回 202，各 ARN 状态为 `pending`）。
-- `wait_seconds`：默认 20。
+- `arns`：1–100 个（重复的会被去重）。每个 ARN 都由资源所在 region 的 worker 执行（global 资源为 us-east-1 的 worker）。
+- `wait_seconds`：默认 20；为 0 时立即返回 202，各 ARN 状态为 `pending`。
 
 响应 200（全部完成）/ 202（未在时限内完成或转异步）：
 
@@ -270,7 +325,6 @@ GET 接口的完整版，过滤条件放在 body 中：
 
 ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone、旧格式 ECS service ARN），服务端会根据已扫描的数据补全。
 
-如果 API 所在 region 无法直接访问目标 region 的服务 endpoint，该 ARN 会改由目标 region 的 worker 异步执行，耗时会更长，可能返回 202。
 
 注意：EC2 等服务的 API 是最终一致的。修改资源后立即刷新可能读到旧数据，建议修改完成后间隔几秒再调用。
 
@@ -303,6 +357,7 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 ```json
 {
   "account_id": "123456789012",
+  "account": {"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE", "listed_at": "2026-10-27T00:00:12Z"},
   "enabled_regions": ["ap-east-1", "eu-west-1"],
   "regions_checked_at": "2026-10-27T00:01:00Z",
   "scopes": [
@@ -320,7 +375,7 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 }
 ```
 
-`scopes[].status`：`succeeded | failed | auth_denied | skipped_no_endpoint | never`。
+`scopes[].status`：`succeeded | failed | auth_denied | never`。`account` 为 §3.15 的 Account，账号不在目录中时为 `null`。
 
 ### 3.10 `GET /v1/resource-types` 已注册的资源类型
 
@@ -328,12 +383,12 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 {
   "items": [
     {"resource_type": "AWS::EC2::Instance", "service": "ec2", "is_global": false, "depends_on": [], "enabled_regions": ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]},
-    {"resource_type": "AWS::IAM::Role", "service": "iam", "is_global": true, "depends_on": [], "enabled_regions": []}
+    {"resource_type": "AWS::IAM::Role", "service": "iam", "is_global": true, "depends_on": [], "enabled_regions": ["global"]}
   ]
 }
 ```
 
-`enabled_regions` 为空表示所需 endpoint 未配置，该类型当前不会被扫描。
+`enabled_regions`：regional 类型为全部扫描 region，global 类型为 `["global"]`。
 
 ### 3.11 健康检查
 
@@ -342,6 +397,52 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 
 两者不记录访问日志。
 
-### 3.12 预留
+### 3.12 Web UI
+
+- `GET /ui/`：面向消费者的看板与扫描管理界面（baseui，实现见 [spec 10](specs/10-web-ui-and-auth.md)），只调用本文档中的 `/v1` 接口，按 `/v1/me` 返回的权限显示操作。
+- `GET /`：重定向到 `/ui/`。
+- 不属于 API 契约，不出现在 OpenAPI 中；`API_UI_ENABLED=false` 或 UI 未构建时不提供。
+
+### 3.13 认证与 API key
+
+`GET /v1/me`（已认证即可）：
+
+```json
+{"subject": "10000002", "kind": "user", "roles": ["operator"], "permissions": ["resources:read", "scans:read", "scans:write"], "auth_mode": "enforced"}
+```
+
+`kind`：`user | service | anonymous`。
+
+以下接口需要 `api_keys:manage`（admin），且只在 `API_AUTH_MODE=enforced` 时可用（否则 403 `FORBIDDEN`）：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /v1/api-keys` | `{"items": [ApiKey]}`，按创建时间倒序，含已撤销的 |
+| `POST /v1/api-keys` | body `{"name": "cmdb-sync", "roles": ["viewer"], "expires_at": "2027-01-01T00:00:00Z"}`（`expires_at` 可省略）→ 201 `{"key": ApiKey, "secret": "inv_<key_id>_<secret>"}`。`secret` 只在此时返回一次，服务端只存哈希 |
+| `DELETE /v1/api-keys/{key_id}` | 撤销 → 204；不存在或已撤销 → 404 |
+
+```json
+{"key_id": "01JBX9...", "name": "cmdb-sync", "roles": ["viewer"], "created_by": "10000003", "created_at": "2026-10-28T08:00:00Z", "expires_at": null, "revoked_at": null, "last_used_at": "2026-10-28T09:12:00Z"}
+```
+
+`last_used_at` 最多每 5 分钟更新一次。
+
+### 3.14 预留
 
 `/v1/history/*` 当前返回 501 `NOT_IMPLEMENTED`。设计见 [specs/09-reserved-extensions.md](specs/09-reserved-extensions.md)。
+
+### 3.15 `GET /v1/accounts` 账号目录
+
+account-directory 列出过的全部账号（数千个以内，不分页），按 `account_id` 排序。账号从目录中消失后仍保留（只是不再扫描）。
+
+```json
+{"items": [{"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE", "listed_at": "2026-10-27T00:00:12Z"}]}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 目录中的名称，可能为 `null` |
+| `eim` | 账号的虚拟归属（8 位字符串）；资源经账号归属到 EIM |
+| `account_type` | `dev` / `preprod` / `prod`（目录中的 `type`） |
+| `status` | 目录中的状态，只扫描 `ACTIVE` |
+| `listed_at` | 最近一次出现在目录中的时间 |

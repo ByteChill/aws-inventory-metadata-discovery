@@ -1,4 +1,4 @@
-.PHONY: setup fmt lint typecheck test test-int cov up down moto migrate image check
+.PHONY: setup fmt lint typecheck test test-int cov up down moto migrate queues web web-dev images ddl check
 
 setup:
 	uv sync
@@ -35,7 +35,19 @@ moto:
 migrate:
 	uv run alembic upgrade head
 
-image:
-	podman build --platform linux/arm64 -t inventory:dev .
+queues:  # the scan queues in moto, found by name like in AWS (needs make moto; .env exported)
+	uv run python -c "import boto3; [boto3.client('sqs', region_name=r, endpoint_url='$${INVENTORY_AWS_ENDPOINT_URL:-http://localhost:5000}').create_queue(QueueName=f'inventory-local-{k}') for r in ('ap-east-1','eu-west-1','eu-west-2','us-east-1') for k in ('scheduled','ondemand')]"
+
+web:  # build the UI into web/dist; serve it locally with API_UI_DIR=web/dist
+	cd web && npm ci --no-audit --no-fund && npm run build
+
+web-dev:  # Vite dev server on :5173, proxying /v1 to the API on :8080
+	cd web && npm run dev
+
+images:
+	for c in broker planner api worker; do deploy/build.sh $$c; done
+
+ddl:
+	deploy/ddl.sh base head
 
 check: lint typecheck test

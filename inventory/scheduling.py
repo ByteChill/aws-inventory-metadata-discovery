@@ -13,12 +13,13 @@ from typing import Any
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import Engine
 
-from inventory.aws import AwsClient, ClientFactory, EndpointResolver
+from inventory.aws import AwsClient, ClientFactory
 from inventory.collectors.base import Registry
-from inventory.config import GLOBAL_REGION, CommonSettings
+from inventory.config import GLOBAL_REGION, US_EAST_1, CommonSettings
 from inventory.db import AccountRegionRepository, JobRepository
-from inventory.errors import REGION_NOT_ENABLED_CODES, BadRequestError, UpstreamError
+from inventory.errors import BadRequestError, UpstreamError
 from inventory.models import (
+    DirectoryAccount,
     NewTask,
     QueueKind,
     ScanJob,
@@ -40,7 +41,6 @@ class Scheduler:
         credentials: CredentialProvider,
         clients: ClientFactory,
         registry: Registry,
-        resolver: EndpointResolver,
         dispatcher: Dispatcher,
         *,
         account_region_max_age: timedelta = timedelta(hours=24),
@@ -51,7 +51,6 @@ class Scheduler:
         self.credentials = credentials
         self.clients = clients
         self.registry = registry
-        self.resolver = resolver
         self.dispatcher = dispatcher
         self.max_age = account_region_max_age
         self.clock = clock
@@ -60,83 +59,72 @@ class Scheduler:
 
     # ------------------------------------------------------------------ regions
     def enabled_regions(self, account_id: str) -> list[str]:
-        """Enabled ∩ supported regions for an account (cached in account_region)."""
+        """Enabled ∩ scan regions for an account (cached in account_region)."""
+        scan_regions = self.settings.scan_regions
         with self.db.connect() as conn:
             cached = self.account_regions.get_enabled(
-                conn, account_id, max_age=self.max_age, now=self.clock()
+                conn, account_id, max_age=self.max_age, regions=scan_regions, now=self.clock()
             )
         if cached is not None:
             return cached
         enabled = self._describe_regions(account_id)
-        supported = self.settings.supported_regions
         # jitter so that 1000+ accounts do not all expire (and hit the broker) together
         checked_at = self.clock() - timedelta(minutes=random.randint(0, 120))
         with self.db.begin() as conn:
             self.account_regions.replace(
-                conn, account_id, enabled=enabled, supported=supported, checked_at=checked_at
+                conn, account_id, enabled=enabled, supported=scan_regions, checked_at=checked_at
             )
-        return sorted(r for r in supported if r in enabled)
+        return sorted(r for r in scan_regions if r in enabled)
 
     def _describe_regions(self, account_id: str) -> set[str]:
+        # us-east-1 is enabled for every account; the primary region is opt-in
         session = self.credentials.session(account_id)
-        home = self.settings.home_region
-        candidates = [home, *(r for r in self.settings.supported_regions if r != home)]
-        last_error: Exception | None = None
-        for api_region in candidates:
-            client: AwsClient = self.clients.client("ec2", api_region, session)
-            try:
-                response = client.describe_regions(AllRegions=False)
-            except ClientError as exc:
-                code = exc.response.get("Error", {}).get("Code", "")
-                if code in REGION_NOT_ENABLED_CODES:
-                    # the account has not opted in to this region; ask another one
-                    last_error = exc
-                    continue
-                raise
-            return {r["RegionName"] for r in response.get("Regions", [])}
-        raise UpstreamError(
-            f"could not list regions for {account_id}: {type(last_error).__name__}",
-            retryable=False,
-            code="REGION_NOT_ENABLED",
-        )
+        client: AwsClient = self.clients.client("ec2", US_EAST_1, session)
+        response = client.describe_regions(AllRegions=False)
+        return {r["RegionName"] for r in response.get("Regions", [])}
 
     # ------------------------------------------------------------------ expansion
     def expand(self, scope: ScanScope, queue: QueueKind) -> list[NewTask]:
+        """Tasks for an account-level scope; raises BadRequestError for what cannot be scanned."""
         if scope.all or scope.arn or not scope.account_id:
             raise BadRequestError("only account-level scopes can be expanded into tasks")
+        self.validate(scope)
         account = scope.account_id
-        if scope.region is None:
+        if scope.region is None and scope.resource_type is None:
+            tasks = [NewTask(account, region, queue) for region in self.enabled_regions(account)]
+            return [*tasks, NewTask(account, GLOBAL_REGION, queue)]
+        rtype = scope.resource_type
+        if scope.region is not None:
+            regions = [scope.region]
+            if scope.region != GLOBAL_REGION and scope.region not in self.enabled_regions(account):
+                raise BadRequestError(f"region {scope.region} is not enabled for account {account}")
+        elif rtype is not None and self.registry.get(rtype).is_global:
+            regions = [GLOBAL_REGION]
+        else:
             regions = self.enabled_regions(account)
-            tasks = [NewTask(account, region, queue) for region in regions]
-            available, _ = self.registry.for_region(GLOBAL_REGION, self.resolver)
-            if available:
-                tasks.append(NewTask(account, GLOBAL_REGION, queue))
-            return tasks
-        self.validate_region(scope.region)
-        if scope.resource_type is None:
-            return [NewTask(account, scope.region, queue)]
-        self.validate_type(scope.resource_type, scope.region)
-        return [NewTask(account, scope.region, queue, resource_types=[scope.resource_type])]
+            if not regions:
+                raise BadRequestError(f"account {account} has none of the scan regions enabled")
+        types = [rtype] if rtype else None
+        return [NewTask(account, region, queue, resource_types=types) for region in regions]
 
-    def validate_region(self, region: str) -> None:
-        if region != GLOBAL_REGION and region not in self.settings.supported_regions:
+    def validate(self, scope: ScanScope) -> None:
+        """Checks that need no account data: scan region, known type, global/regional match."""
+        region, rtype = scope.region, scope.resource_type
+        if region not in (None, GLOBAL_REGION, *self.settings.scan_regions):
             raise BadRequestError(f"region {region} is not supported")
-
-    def validate_type(self, resource_type: str, region: str) -> None:
-        if not self.registry.has(resource_type):
-            raise BadRequestError(f"unknown resource_type {resource_type}")
-        if self.registry.get(resource_type).is_global != (region == GLOBAL_REGION):
-            raise BadRequestError(f"{resource_type} cannot be scanned in region {region}")
+        if rtype is None:
+            return
+        if not self.registry.has(rtype):
+            raise BadRequestError(f"unknown resource_type {rtype}")
+        if region is not None and self.registry.get(rtype).is_global != (region == GLOBAL_REGION):
+            raise BadRequestError(f"{rtype} cannot be scanned in region {region}")
 
     # ------------------------------------------------------------------ submit
     def submit(self, job: ScanJob, tasks: Sequence[NewTask]) -> SubmitResult:
-        """Write tasks first, then dispatch; failed sends are marked DISPATCH_FAILED.
-
-        Inline tasks (API refresh) are created but not dispatched.
-        """
+        """Write tasks first, then dispatch; failed sends are marked DISPATCH_FAILED."""
         with self.db.begin() as conn:
             created = self.jobs.create_tasks(conn, job.job_id, tasks, now=self.clock())
-        queued = [t for t in created if t.status == "queued" and t.queue != "inline"]
+        queued = [t for t in created if t.status == "queued"]
         messages = [(message_for(job, t), t.queue) for t in queued]
         try:
             result = self.dispatcher.dispatch(messages) if messages else DispatchResult()
@@ -200,7 +188,7 @@ class AccountDirectoryClient:
         self._function_name = function_name
         self._region = region
 
-    def list_accounts(self) -> list[str]:
+    def list_accounts(self) -> list[DirectoryAccount]:
         client = self._clients.client("lambda", self._region)
         try:
             response = client.invoke(
@@ -218,14 +206,24 @@ class AccountDirectoryClient:
         return parse_account_directory(body)
 
 
-def parse_account_directory(body: dict[str, Any]) -> list[str]:
+def parse_account_directory(body: dict[str, Any]) -> list[DirectoryAccount]:
+    """Every listed account, sorted by ID; only ``ACTIVE`` ones are scanned (the caller's call).
+
+    Response: ``{"accounts": [{"account_id", "name", "eim", "type", "status"}]}``; empty
+    strings mean "not set".
+    """
     accounts = body.get("accounts")
     if not isinstance(accounts, list):
         raise UpstreamError("account directory response has no 'accounts' list", retryable=False)
-    return sorted(
-        {
-            str(a["account_id"])
-            for a in accounts
-            if isinstance(a, dict) and a.get("account_id") and a.get("status", "ACTIVE") == "ACTIVE"
-        }
-    )
+    parsed = {
+        str(a["account_id"]): DirectoryAccount(
+            account_id=str(a["account_id"]),
+            name=a.get("name") or None,
+            eim=a.get("eim") or None,
+            account_type=a.get("type") or None,
+            status=str(a.get("status") or "ACTIVE"),
+        )
+        for a in accounts
+        if isinstance(a, dict) and a.get("account_id")
+    }
+    return [parsed[k] for k in sorted(parsed)]

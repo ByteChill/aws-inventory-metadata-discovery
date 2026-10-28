@@ -13,7 +13,8 @@
 
 ```
 pyproject.toml  uv.lock  .python-version  .gitignore  Makefile
-compose.yaml    Dockerfile  .env.example     # .env.example 指向 compose 中的服务与 moto server
+compose.yaml    .env.example                 # .env.example 指向 compose 中的服务与 moto server
+deploy/         # 镜像构建与离线 DDL（spec 08 R2）
 inventory/__init__.py
 inventory/config.py
 inventory/errors.py
@@ -49,7 +50,9 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 | `up` / `down` | `podman compose up -d` / `podman compose down` |
 | `moto` | `uv run moto_server -p 5000` |
 | `migrate` | `uv run alembic upgrade head` |
-| `image` | `podman build --platform linux/arm64 -t inventory:dev .` |
+| `queues` | 在 moto 中为 4 个 region 创建 `inventory-local-scheduled` / `-ondemand` |
+| `images` | `deploy/build.sh <component>` × 4（linux/amd64） |
+| `ddl` | `deploy/ddl.sh base head` |
 | `check` | `lint typecheck test` |
 
 ## 2. 本地依赖服务与镜像
@@ -63,24 +66,15 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 
 镜像取自 ECR Public（Docker 官方镜像的副本），不依赖 Docker Hub。本地运行 API/worker 需要模拟 AWS 时，moto server 直接在本机运行：`make moto`（即 `uv run moto_server -p 5000`）。
 
-`Dockerfile`：
-
-- 基础镜像 `public.ecr.aws/lambda/python:3.12`，架构 arm64（Lambda 与 Fargate 都用 Graviton）。
-- 用 `uv export --frozen --no-dev` 导出依赖安装到 `${LAMBDA_TASK_ROOT}`，再复制 `inventory/` 与 `migrations/`。
-- 默认 `CMD ["inventory.handlers.broker_lambda.handler"]`。其他 Lambda 在 Terraform 中覆盖 `image_config.command`；ECS 任务覆盖 entrypoint：API 为 `uvicorn --factory inventory.api.app:create_app --host 0.0.0.0 --port 8080`，worker 为 `python -m inventory.handlers.worker`。
+镜像：每个组件一个，定义在 `deploy/Containerfile`（spec 08 R2）。
 
 ## 3. 配置（`inventory/config.py`）
 
 规则：**只有** `config.py` 读取环境变量；其他模块通过参数或依赖注入拿到 settings 对象。
 
 ```python
-class RegionCell(BaseModel):
-    region: str
-    endpoints: dict[
-        str, str
-    ] = {}  # boto3 服务名 -> endpoint URL；未列出的服务使用默认 regional DNS
-    scheduled_queue_url: str | None = None
-    ondemand_queue_url: str | None = None
+GLOBAL_REGION = "global"
+US_EAST_1 = "us-east-1"  # IAM / Route 53、broker 的 STS、DescribeRegions 都在这里调用（AWS 决定）
 
 
 class CommonSettings(BaseSettings):  # env_prefix="INVENTORY_", env_nested_delimiter="__"
@@ -88,23 +82,26 @@ class CommonSettings(BaseSettings):  # env_prefix="INVENTORY_", env_nested_delim
     service_name: str = "inventory"
     log_level: str = "INFO"
     log_sample_rate: float = 0.0  # DEBUG 日志采样比例
-    home_region: str = "ap-east-1"
-    supported_regions: list[str]  # ["ap-east-1","eu-west-1","eu-west-2","us-east-1"]
-    global_home_region: str = "us-east-1"
+    metrics_mode: Literal["emf", "api"] = "emf"
+    primary_region: str = "ap-east-1"  # 控制平面：broker、planner、API、数据库、Redis
+    scan_regions: list[str]  # 部署了 worker 的 region，只有 planner 与 API 使用；必须包含 us-east-1
+    endpoints: dict[str, dict[str, str]] = {}  # 只含跨 region 调用：{region: {service: vpce URL}}
     transport: Literal["peering", "lambda"] = "peering"  # lambda = 方案 B，v1 未实现
     history_sink: Literal["null", "outbox"] = "null"  # outbox = 变更历史，v1 未实现
-    cells: list[RegionCell]  # JSON 字符串形式的环境变量
-    broker_function_name: str = "inventory-broker"
-    database_url: SecretStr | None = None  # 本地用；AWS 上用 database_secret_arn
+    account_region_max_age_hours: int = 24
+    database_url: SecretStr | None = None  # 本地用；AWS 上用 database_secret_arn + database_host
     database_secret_arn: str | None = None
+    database_host: str | None = None
     aws_endpoint_url: str | None = None  # 本地指向 moto server，设置后覆盖所有 endpoint
 
-    def cell(self, region: str) -> RegionCell: ...
+    name_prefix: str  # 属性：inventory-<environment>，与 Terraform 的资源名一致
+    broker_function_name: str  # 属性：<name_prefix>-adfs-broker
+    def queue_name(self, kind: str) -> str: ...  # <name_prefix>-<kind>
 ```
 
 - 组件专属配置各自一个类：`BrokerSettings`（`BROKER_`）、`PlannerSettings`（`PLANNER_`）、`WorkerSettings`（`WORKER_`）、`ApiSettings`（`API_`），字段定义在各自 spec 中，类本身都放在 `config.py`。
 - 提供 `get_common_settings()` 等带 `functools.cache` 的工厂函数；测试中通过 `monkeypatch.setenv` + `cache_clear()` 覆盖。
-- 启动时校验：`transport == "lambda"` 抛 `NotImplementedFeatureError("方案 B 未实现")`；`history_sink == "outbox"` 抛 `NotImplementedFeatureError("变更历史未实现")`；`supported_regions` 中每个 region 都必须有对应 `cells` 项。
+- 启动时校验：`transport == "lambda"` 抛 `NotImplementedFeatureError("方案 B 未实现")`；`history_sink == "outbox"` 抛 `NotImplementedFeatureError("变更历史未实现")`；`scan_regions` 必须包含 `us-east-1`（global 资源）。
 - 密钥（数据库密码、ADFS 密码、Redis AUTH）不放进 settings 值，只放 Secrets Manager ARN，运行时用 Powertools Parameters 读取并缓存（`max_age=300`）。
 
 ## 4. 错误类型（`inventory/errors.py`）
@@ -192,14 +189,10 @@ def timed(
 ```python
 class EndpointResolver:
     def __init__(self, settings: CommonSettings): ...
+    def api_region(self, region: str) -> str: ...  # global -> us-east-1
     def endpoint_url(
         self, service: str, region: str
-    ) -> (
-        str | None
-    ): ...  # aws_endpoint_url 优先，其次 cell.endpoints[service]，否则 None（boto3 默认）
-    def has_endpoint(
-        self, service: str, region: str
-    ) -> bool: ...  # 供 collector 的 required_endpoints 检查
+    ) -> str | None: ...  # aws_endpoint_url 优先，其次 endpoints[api_region][service]，否则 None（默认 DNS）
 
 
 class ClientFactory:
@@ -208,10 +201,8 @@ class ClientFactory:
                config: Config | None = None) -> AwsClient: ...   # config 与默认配置合并
 ```
 
-`EndpointResolver` 另提供 `api_region(region)`（`global` → `global_home_region`）与 `reachable_from(service, region, caller_region)`（跨 region 必须配置了 endpoint-specific DNS）。
-
 - botocore `Config`：`retries={"mode": "adaptive", "max_attempts": 10}`、`connect_timeout=5`、`read_timeout=30`、`max_pool_connections=32`、`user_agent_extra="inventory/<version>"`。
-- `has_endpoint` 规则：**只有在 `cells[region].endpoints` 中列出的服务才算可用**，避免调用没有 endpoint 的服务一直等到超时。值为空字符串表示"使用默认 regional DNS"（即本 VPC 的 private DNS，只在本 region 内有效）；跨 region 访问必须配置 endpoint-specific DNS。设置了 `aws_endpoint_url`（本地 moto）时所有服务都视为可用。
+- 同 region 的调用不需要配置：boto3 只给服务名和 region，默认域名解析到本 VPC 的 interface endpoint。跨 region 调用必须用对端 endpoint 的专用 DNS（private DNS 不经 peering 共享），由 `INVENTORY_ENDPOINTS` 提供。代码不判断 endpoint 是否存在（基础设施由 infra 保证）。
 - 禁止在 `inventory/` 的其他模块中直接调用 `boto3.client(...)`（测试代码中创建 moto client 不受此限制）。
 
 ## 7. 测试基建
@@ -230,11 +221,11 @@ class ClientFactory:
 
 | 用例 | fixture |
 |---|---|
-| settings 能从环境变量解析 `cells` JSON；缺少 cell 时报错；`transport=lambda` 时报错 | `foundation/settings.local.json`、`foundation/settings.missing_cell.json` |
+| settings 能解析 `scan_regions`、`endpoints` JSON；`scan_regions` 不含 us-east-1 时报错；`transport=lambda` 时报错 | `foundation/settings.local.json`、`foundation/settings.no_us_east_1.json` |
 | `bind_context` 在 asyncio 并发任务间隔离；`submit_with_context` 能把上下文带入线程 | — |
 | `RedactionFilter` 对嵌套 dict / list / extra 中的敏感 key 脱敏 | `foundation/redaction.input.json`、`foundation/redaction.expected.json` |
 | moto 下调用 `ec2.describe_vpcs` 产生一条包含 `aws_service`、`aws_operation`、`duration_ms` 的日志 | — |
-| `EndpointResolver` 优先级：`aws_endpoint_url` > cell 配置 > 默认 | `foundation/settings.local.json` |
+| `EndpointResolver`：`aws_endpoint_url` > `endpoints` > 默认 DNS；global 路由到 us-east-1 | `foundation/endpoint_cases.json` |
 
 ## 验收标准
 

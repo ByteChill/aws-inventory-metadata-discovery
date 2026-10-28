@@ -1,0 +1,7 @@
+[
+  "region eu-west-2 is not enabled for account 123456789012",
+  "region eu-west-2 is not enabled for account 123456789012",
+  "region sa-east-1 is not supported",
+  "AWS::EC2::VPC cannot be scanned in region global",
+  "unknown resource_type AWS::Nope::Thing"
+]

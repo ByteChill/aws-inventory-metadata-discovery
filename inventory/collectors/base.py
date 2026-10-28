@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 import boto3
 from botocore.exceptions import ClientError
 
-from inventory.aws import AwsClient, ClientFactory, EndpointResolver
+from inventory.aws import AwsClient, ClientFactory
 from inventory.config import GLOBAL_REGION
 from inventory.models import KeepExisting, ResourceKey, ResourceRecord
 from inventory.observability import submit_with_context
@@ -76,7 +76,6 @@ class Collector(ABC):
     resource_type: ClassVar[str]
     service: ClassVar[str]
     is_global: ClassVar[bool] = False
-    required_endpoints: ClassVar[tuple[str, ...]] = ()  # defaults to (service,)
     depends_on: ClassVar[tuple[str, ...]] = ()
     drop_fields: ClassVar[tuple[str, ...]] = ()
     arn_pattern: ClassVar[re.Pattern[str]]
@@ -84,10 +83,6 @@ class Collector(ABC):
     def __init__(self, ctx: CollectorContext) -> None:
         self.ctx = ctx
         self.client = ctx.client(self.service)
-
-    @classmethod
-    def endpoints(cls) -> tuple[str, ...]:
-        return cls.required_endpoints or (cls.service,)
 
     # ---------------------------------------------------------------- to implement
     @abstractmethod
@@ -239,17 +234,6 @@ class Registry:
         """Types that belong to a region: global types only for 'global', regional otherwise."""
         is_global = region == GLOBAL_REGION
         return [c for c in self.all() if c.is_global == is_global]
-
-    def for_region(
-        self, region: str, resolver: EndpointResolver
-    ) -> tuple[list[type[Collector]], list[type[Collector]]]:
-        """Split applicable types into (available, skipped because an endpoint is missing)."""
-        available: list[type[Collector]] = []
-        skipped: list[type[Collector]] = []
-        for cls in self.applicable(region):
-            ok = all(resolver.has_endpoint(s, region) for s in cls.endpoints())
-            (available if ok else skipped).append(cls)
-        return available, skipped
 
     def route_arn(self, arn: str) -> tuple[type[Collector], ParsedArn] | None:
         for cls in self.all():

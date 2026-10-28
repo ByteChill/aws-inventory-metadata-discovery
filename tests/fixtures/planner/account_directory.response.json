@@ -2,30 +2,51 @@
   "accounts": [
     {
       "account_id": "100000000001",
+      "name": "team-209-dev",
+      "eim": "20142209",
+      "type": "dev",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000002",
+      "name": "",
+      "eim": "20142209",
+      "type": "prod",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000003",
+      "name": "team-011-dev",
+      "eim": "20150011",
+      "type": "dev",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000004",
+      "name": "team-011-preprod",
+      "eim": "20150011",
+      "type": "preprod",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000005",
+      "name": "team-302-prod",
+      "eim": "20160302",
+      "type": "prod",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000006",
+      "name": "team-302-dev",
+      "eim": "20160302",
+      "type": "dev",
       "status": "ACTIVE"
     },
     {
       "account_id": "100000000007",
+      "name": "team-302-dev",
+      "eim": "20160302",
+      "type": "dev",
       "status": "SUSPENDED"
     }
   ]

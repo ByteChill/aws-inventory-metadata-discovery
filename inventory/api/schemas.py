@@ -8,7 +8,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from inventory.models import ACCOUNT_ID_PATTERN, JobStatus, RefreshStatus, TaskStatus, Trigger
+from inventory.models import (
+    ACCOUNT_ID_PATTERN,
+    AccountType,
+    JobStatus,
+    RefreshStatus,
+    TaskStatus,
+    Trigger,
+)
 
 ARN_PATTERN = r"^arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:\d{0,12}:.+$"
 SortField = Literal["last_changed_at", "resource_id"]
@@ -52,12 +59,17 @@ class Resource(BaseModel):
     observed_at: datetime
     deleted_at: datetime | None = None
     verified_at: datetime | None = None
+    account_name: str | None = None
+    eim: str | None = None
+    account_type: str | None = None
 
 
 class SearchRequest(_Request):
     account_ids: list[str] | None = Field(None, max_length=1000)
     regions: list[str] | None = Field(None, max_length=50)
     resource_types: list[str] | None = Field(None, max_length=100)
+    eims: list[str] | None = Field(None, max_length=1000)
+    account_types: list[AccountType] | None = Field(None, max_length=3)
     tags: dict[str, str] | None = Field(None, max_length=20)
     tag_keys: list[str] | None = Field(None, max_length=20)
     name_prefix: str | None = Field(None, max_length=256)
@@ -97,6 +109,8 @@ class ScanTaskOut(BaseModel):
     status: TaskStatus
     attempts: int
     result: dict[str, Any]
+    error_code: str | None = None
+    error_message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
 
@@ -107,6 +121,7 @@ class ScanJobOut(BaseModel):
     scope: dict[str, Any]
     status: JobStatus
     request_id: str | None = None
+    requested_by: str | None = None
     deduplicated: bool = False
     created_at: datetime
     started_at: datetime | None = None
@@ -157,8 +172,22 @@ class CoverageScope(BaseModel):
     error_message: str | None = None
 
 
+class Account(BaseModel):
+    account_id: str
+    name: str | None = None
+    eim: str | None = None
+    account_type: str | None = None
+    status: str
+    listed_at: datetime
+
+
+class AccountsResponse(BaseModel):
+    items: list[Account]
+
+
 class CoverageResponse(BaseModel):
     account_id: str
+    account: Account | None = None
     enabled_regions: list[str]
     regions_checked_at: datetime | None = None
     scopes: list[CoverageScope]
@@ -174,3 +203,49 @@ class ResourceTypeOut(BaseModel):
 
 class ResourceTypesResponse(BaseModel):
     items: list[ResourceTypeOut]
+
+
+# --------------------------------------------------------------------------- auth (spec 10)
+
+RoleName = Literal["viewer", "operator", "admin"]
+
+
+class MeOut(BaseModel):
+    subject: str
+    kind: Literal["user", "service", "anonymous"]
+    roles: list[RoleName]
+    permissions: list[str]
+    auth_mode: Literal["disabled", "enforced"]
+
+
+class ApiKeyOut(BaseModel):
+    key_id: str
+    name: str
+    roles: list[RoleName]
+    created_by: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+class ApiKeyList(BaseModel):
+    items: list[ApiKeyOut]
+
+
+class ApiKeyCreate(_Request):
+    name: str = Field(min_length=1, max_length=100)
+    roles: list[RoleName] = Field(min_length=1)
+    expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        return value
+
+
+class ApiKeyCreated(BaseModel):
+    key: ApiKeyOut
+    secret: str  # shown once; only its hash is stored

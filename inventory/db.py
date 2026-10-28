@@ -46,6 +46,7 @@ from ulid import ULID
 from inventory.config import CommonSettings
 from inventory.models import (
     TERMINAL_TASK_STATUSES,
+    DirectoryAccount,
     NewTask,
     ResourceKey,
     ResourceRecord,
@@ -124,6 +125,34 @@ scan_job = Table(
     Column("started_at", TS),
     Column("finished_at", TS),
     Column("deadline_at", TS),
+    Column("requested_by", Text),  # principal.subject; NULL for scheduled jobs
+)
+
+# what account-directory last said about each account; rows stay when an account stops
+# being listed (it is then just not scanned), so its resources keep their EIM
+account = Table(
+    "account",
+    metadata,
+    Column("account_id", CHAR(12), primary_key=True),
+    Column("name", Text),
+    Column("eim", Text),
+    Column("account_type", Text),
+    Column("status", Text, nullable=False),
+    Column("listed_at", TS, nullable=False),
+)
+
+api_key = Table(
+    "api_key",
+    metadata,
+    Column("key_id", Text, primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("key_hash", LargeBinary, nullable=False),
+    Column("roles", ARRAY(Text), nullable=False),
+    Column("created_by", Text, nullable=False),
+    Column("created_at", TS, nullable=False),
+    Column("expires_at", TS),
+    Column("revoked_at", TS),
+    Column("last_used_at", TS),
 )
 
 scan_task = Table(
@@ -498,9 +527,16 @@ class ScopeStateRepository:
 
 class AccountRegionRepository:
     def get_enabled(
-        self, conn: Connection, account_id: str, *, max_age: timedelta, now: datetime | None = None
+        self,
+        conn: Connection,
+        account_id: str,
+        *,
+        max_age: timedelta,
+        regions: Iterable[str],
+        now: datetime | None = None,
     ) -> list[str] | None:
-        """Cached enabled regions, or None when missing or older than ``max_age``."""
+        """Cached enabled regions, or None when missing, older than ``max_age`` or checked
+        against a different set of scan regions (a region was added or removed)."""
         rows = list(
             conn.execute(
                 select(
@@ -511,7 +547,7 @@ class AccountRegionRepository:
         if not rows:
             return None
         cutoff = (now or utcnow()) - max_age
-        if min(r.checked_at for r in rows) < cutoff:
+        if min(r.checked_at for r in rows) < cutoff or {r.region for r in rows} != set(regions):
             return None
         return sorted(r.region for r in rows if r.enabled)
 
@@ -557,6 +593,7 @@ class JobRepository:
         trigger: Trigger,
         scope: ScanScope,
         request_id: str | None = None,
+        requested_by: str | None = None,
         flags: Mapping[str, Any] | None = None,
         deadline_at: datetime | None = None,
         now: datetime | None = None,
@@ -574,6 +611,7 @@ class JobRepository:
                     scope_hash=scope_hash,
                     status="queued",
                     request_id=request_id,
+                    requested_by=requested_by,
                     flags=dict(flags or {}),
                     stats={},
                     created_at=when,
@@ -969,12 +1007,8 @@ class JobRepository:
             update(scan_task)
             .where(
                 # only running tasks heartbeat; queued/retrying ones wait in SQS (possibly
-                # behind a long backlog) and are covered by the job deadline instead. Inline
-                # (API) tasks never go through SQS: a queued one means the API process died.
-                or_(
-                    scan_task.c.status == "running",
-                    and_(scan_task.c.queue == "inline", scan_task.c.status == "queued"),
-                ),
+                # behind a long backlog) and are covered by the job deadline instead
+                scan_task.c.status == "running",
                 scan_task.c.updated_at < stale_before,
             )
             .values(status="timed_out", finished_at=when, updated_at=when, error_code="TIMED_OUT")
@@ -1019,3 +1053,92 @@ def terminal_job_status(task_statuses: Sequence[str]) -> str:
     if all(s == "failed" for s in counted):
         return "failed"
     return "partial"
+
+
+# --------------------------------------------------------------------------- accounts
+
+
+class AccountRepository:
+    def upsert(self, conn: Connection, accounts: Sequence[DirectoryAccount], now: datetime) -> None:
+        rows = [
+            {
+                "account_id": a.account_id,
+                "name": a.name,
+                "eim": a.eim,
+                "account_type": a.account_type,
+                "status": a.status,
+                "listed_at": now,
+            }
+            for a in accounts
+        ]
+        for start in range(0, len(rows), UPSERT_BATCH):
+            stmt = pg_insert(account).values(rows[start : start + UPSERT_BATCH])
+            conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[account.c.account_id],
+                    set_={
+                        k: stmt.excluded[k]
+                        for k in ("name", "eim", "account_type", "status", "listed_at")
+                    },
+                )
+            )
+
+
+# --------------------------------------------------------------------------- API keys
+
+
+class ApiKeyRepository:
+    """API keys for service callers (spec 10); only the SHA-256 of the secret is stored."""
+
+    def create(
+        self,
+        conn: Connection,
+        *,
+        key_id: str,
+        name: str,
+        key_hash: bytes,
+        roles: Sequence[str],
+        created_by: str,
+        expires_at: datetime | None,
+        now: datetime | None = None,
+    ) -> RowMapping:
+        row = conn.execute(
+            api_key.insert()
+            .values(
+                key_id=key_id,
+                name=name,
+                key_hash=key_hash,
+                roles=list(roles),
+                created_by=created_by,
+                created_at=now or utcnow(),
+                expires_at=expires_at,
+            )
+            .returning(api_key)
+        ).mappings()
+        return row.one()
+
+    def get(self, conn: Connection, key_id: str) -> RowMapping | None:
+        return conn.execute(select(api_key).where(api_key.c.key_id == key_id)).mappings().first()
+
+    def list(self, conn: Connection) -> list[RowMapping]:
+        rows = conn.execute(select(api_key).order_by(api_key.c.created_at.desc())).mappings()
+        return list(rows)
+
+    def revoke(self, conn: Connection, key_id: str, now: datetime | None = None) -> bool:
+        result = conn.execute(
+            update(api_key)
+            .where(api_key.c.key_id == key_id, api_key.c.revoked_at.is_(None))
+            .values(revoked_at=now or utcnow())
+        )
+        return result.rowcount > 0
+
+    def touch(self, conn: Connection, key_id: str, now: datetime, min_interval: timedelta) -> None:
+        """Record use, at most once per ``min_interval`` (avoids a write per request)."""
+        conn.execute(
+            update(api_key)
+            .where(
+                api_key.c.key_id == key_id,
+                or_(api_key.c.last_used_at.is_(None), api_key.c.last_used_at < now - min_interval),
+            )
+            .values(last_used_at=now)
+        )

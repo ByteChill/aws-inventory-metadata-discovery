@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
 from sqlalchemy import Engine, select
 
-from inventory.collectors import registry
-from inventory.config import get_planner_settings
-from inventory.db import JobRepository, account_region, scan_task
+from inventory.config import clear_settings_cache, get_planner_settings
+from inventory.db import JobRepository, ResourceRepository, account, account_region, scan_task
 from inventory.errors import BadRequestError, UpstreamError
 from inventory.handlers.planner_lambda import Planner
-from inventory.models import NewTask, ScanScope, ScanTaskMessage
+from inventory.models import DirectoryAccount, NewTask, ScanScope, ScanTaskMessage
 from inventory.scheduling import AccountDirectoryClient, parse_account_directory
 from inventory.transport import DispatchResult
 from tests.helpers import load_fixture
@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("moto_env", "froz
 
 
 class FixtureDirectory:
-    def list_accounts(self) -> list[str]:
+    def list_accounts(self) -> list[DirectoryAccount]:
         return parse_account_directory(load_fixture("planner/account_directory.response.json"))
 
 
@@ -51,8 +51,7 @@ def test_scheduled_run_end_to_end(db: Engine) -> None:
     dispatched = p.handle(event("dispatch_batch", job_id), no_time_left)
 
     expected = load_fixture("planner/list_targets.response.json")
-    runtime = p.rt
-    global_tasks = 1 if registry.for_region("global", runtime.resolver)[0] else 0
+    global_tasks = 1
     assert created["full_refresh"] is True and not created["skipped"]
     assert {k: targets[k] for k in expected} == expected
     per_account = len(REGIONS) + global_tasks
@@ -65,7 +64,7 @@ def test_scheduled_run_end_to_end(db: Engine) -> None:
     }
     retried = p.handle(event("dispatch_batch", job_id), no_time_left)  # Map retry
     assert (retried["skipped_accounts"], retried["tasks"]) == (5, 0)
-    messages = [m for r in REGIONS for m in drain(r, "inventory-test-scheduled")]
+    messages = [m for r in REGIONS for m in drain(r, "inventory-local-scheduled")]
     assert len(messages) == 5 * per_account
     body = ScanTaskMessage.model_validate_json(messages[0]["Body"])
     assert body.job_id == job_id and body.trigger == "schedule" and body.full_refresh
@@ -109,8 +108,8 @@ def test_enabled_regions_are_cached(db: Engine) -> None:
     assert scheduler.enabled_regions("100000000001") == first
 
 
-class OptInClients:
-    """ec2.describe_regions fails with OptInRequired in the home region only."""
+class RecordingClients:
+    """ec2.describe_regions answering for an account without the opt-in primary region."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -121,20 +120,18 @@ class OptInClients:
         class Ec2:
             def describe_regions(self, **_: Any) -> dict[str, Any]:
                 clients.calls.append(region)
-                if region == "ap-east-1":
-                    raise ClientError({"Error": {"Code": "OptInRequired"}}, "DescribeRegions")
                 return {"Regions": [{"RegionName": "eu-west-1"}, {"RegionName": "us-east-1"}]}
 
         return Ec2()
 
 
-def test_enabled_regions_fall_back_when_home_region_is_not_enabled(db: Engine) -> None:
+def test_enabled_regions_are_read_in_us_east_1(db: Engine) -> None:
     scheduler = make_runtime(db).scheduler
-    fake = OptInClients()
+    fake = RecordingClients()
     scheduler.clients = fake  # type: ignore[assignment]
 
     assert scheduler.enabled_regions("100000000002") == ["eu-west-1", "us-east-1"]
-    assert fake.calls == ["ap-east-1", "eu-west-1"]
+    assert fake.calls == ["us-east-1"]
 
 
 @pytest.mark.parametrize(
@@ -158,6 +155,21 @@ def test_expand_type_scope(db: Engine) -> None:
     assert tasks == [
         NewTask("100000000001", "eu-west-1", "ondemand", resource_types=["AWS::EC2::VPC"])
     ]
+
+
+def test_expand_type_scope_without_region(db: Engine) -> None:
+    scheduler = make_runtime(db).scheduler
+    tasks = scheduler.expand(
+        ScanScope(account_id="100000000001", resource_type="AWS::EC2::VPC"), "ondemand"
+    )
+
+    assert [(t.region, t.resource_types) for t in tasks] == [
+        (r, ["AWS::EC2::VPC"]) for r in scheduler.enabled_regions("100000000001")
+    ]
+    global_tasks = scheduler.expand(
+        ScanScope(account_id="100000000001", resource_type="AWS::IAM::Role"), "ondemand"
+    )
+    assert [(t.region, t.resource_types) for t in global_tasks] == [("global", ["AWS::IAM::Role"])]
 
 
 class FailingDispatcher:
@@ -186,9 +198,62 @@ def test_maintenance_runs(db: Engine) -> None:
     assert result == {"stale_jobs": [], "overdue_jobs": [], "purged": 0}
 
 
+def test_maintenance_purges_after_the_configured_retention(
+    db: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.db.test_repository import FROZEN_NOW, rec
+
+    deleted_at = FROZEN_NOW - timedelta(days=100)
+    resources = ResourceRepository()
+    with db.begin() as conn:
+        resources.upsert(conn, [rec("vpc_b", deleted_at - timedelta(hours=1))], "job-1")
+        resources.soft_delete(
+            conn,
+            "AWS::EC2::VPC",
+            "123456789012",
+            "eu-west-1",
+            ["vpc-0b"],
+            before=deleted_at,
+            job_id="job-2",
+            now=deleted_at,
+        )
+
+    kept = planner(db).handle(event("maintenance"), lambda: 60_000)["purged"]  # default 180 days
+    monkeypatch.setenv("PLANNER_DELETED_RETENTION_DAYS", "90")
+    clear_settings_cache()
+    purged = planner(db).handle(event("maintenance"), lambda: 60_000)["purged"]
+
+    assert (kept, purged) == (0, 1)
+
+
+def test_list_targets_records_every_listed_account(db: Engine) -> None:
+    p = planner(db)
+    job_id = p.handle(event("create_job"), no_time_left)["job_id"]
+    p.handle(event("list_targets", job_id), no_time_left)
+
+    class ShorterDirectory:
+        def list_accounts(self) -> list[DirectoryAccount]:
+            return FixtureDirectory().list_accounts()[1:]
+
+    # an account that drops out of the directory is no longer scanned but keeps its EIM
+    Planner(make_runtime(db), get_planner_settings(), ShorterDirectory()).list_targets(job_id)  # type: ignore[arg-type]
+    with db.connect() as conn:
+        rows = conn.execute(
+            select(
+                account.c.account_id, account.c.eim, account.c.account_type, account.c.status
+            ).order_by(account.c.account_id)
+        ).all()
+
+    expected = load_fixture("planner/account_directory.expected.json")
+    assert [tuple(r) for r in rows] == [
+        (a["account_id"], a["eim"], a["account_type"], a["status"]) for a in expected
+    ]
+
+
 def test_account_directory_adapter() -> None:
     body = load_fixture("planner/account_directory.response.json")
-    assert parse_account_directory(body)[-1] == "100000000006"  # SUSPENDED dropped
+    parsed = parse_account_directory(body)
+    assert [asdict(a) for a in parsed] == load_fixture("planner/account_directory.expected.json")
     with pytest.raises(UpstreamError):
         parse_account_directory({"unexpected": True})
 
@@ -204,7 +269,7 @@ def test_account_directory_adapter() -> None:
             return FakeLambda()
 
     client = AccountDirectoryClient(Clients(), "aws-inventory-account-directory", "ap-east-1")  # type: ignore[arg-type]
-    assert len(client.list_accounts()) == 6
+    assert client.list_accounts() == parsed
 
 
 def test_message_contract_fixture() -> None:
@@ -311,21 +376,16 @@ def test_dispatcher_routes_by_region_and_global(db: Engine) -> None:
 
     assert sorted(result.succeeded) == sorted(f"t-{r}" for r in (*REGIONS, "global"))
     us_east = [
-        json.loads(m["Body"])["region"] for m in drain("us-east-1", "inventory-test-scheduled")
+        json.loads(m["Body"])["region"] for m in drain("us-east-1", "inventory-local-scheduled")
     ]
     assert sorted(us_east) == ["global", "us-east-1"]
-    assert len(drain("eu-west-2", "inventory-test-scheduled")) == 1
+    assert len(drain("eu-west-2", "inventory-local-scheduled")) == 1
 
 
-def test_expand_account_scope_skips_global_without_endpoints(db: Engine) -> None:
-    runtime = make_runtime(db)
+def test_expand_account_scope_always_adds_global(db: Engine) -> None:
+    tasks = make_runtime(db).scheduler.expand(ScanScope(account_id="100000000001"), "ondemand")
 
-    tasks = runtime.scheduler.expand(ScanScope(account_id="100000000001"), "ondemand")
-
-    expected_global = bool(registry.for_region("global", runtime.resolver)[0])
-    assert sorted(t.region for t in tasks) == sorted(
-        [*REGIONS, *(["global"] if expected_global else [])]
-    )
+    assert sorted(t.region for t in tasks) == sorted([*REGIONS, "global"])
 
 
 class RaisingDispatcher:

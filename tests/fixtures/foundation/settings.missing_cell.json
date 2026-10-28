@@ -1,5 +1,0 @@
-{
-  "INVENTORY_SUPPORTED_REGIONS": "[\"ap-east-1\",\"eu-west-1\"]",
-  "INVENTORY_GLOBAL_HOME_REGION": "ap-east-1",
-  "INVENTORY_CELLS": "[{\"region\":\"ap-east-1\",\"endpoints\":{}}]"
-}

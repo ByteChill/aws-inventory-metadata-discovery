@@ -1,7 +1,7 @@
-# Alarms and saved Logs Insights queries for the home region.
+# Alarms and saved Logs Insights queries for the primary region.
 
 locals {
-  home_alarm_actions = contains(keys(var.alarm_topic_arns), var.home_region) ? [var.alarm_topic_arns[var.home_region]] : []
+  primary_alarm_actions = contains(keys(var.alarm_topic_arns), var.primary_region) ? [var.alarm_topic_arns[var.primary_region]] : []
   emf_alarms = {
     job-tasks-failed = {
       metric    = "JobTasksFailed"
@@ -32,7 +32,7 @@ locals {
     module.broker.log_group_name,
     module.planner.log_group_name,
     aws_cloudwatch_log_group.api.name,
-    "/ecs/${local.name_prefix}-worker", # the home-region worker; other regions have their own
+    "/ecs/${local.name_prefix}-worker", # the primary-region worker; other regions have their own
   ]
 }
 
@@ -49,7 +49,7 @@ resource "aws_cloudwatch_metric_alarm" "emf" {
   threshold           = each.value.threshold
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = local.home_alarm_actions
+  alarm_actions       = local.primary_alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "api_5xx" {
@@ -64,7 +64,7 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   threshold           = 5
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
-  alarm_actions       = local.home_alarm_actions
+  alarm_actions       = local.primary_alarm_actions
 }
 
 resource "aws_cloudwatch_query_definition" "by_request_id" {

@@ -12,9 +12,9 @@ def test_endpoint_resolution(settings_env: dict[str, str], case: dict[str, objec
     resolver = EndpointResolver(get_common_settings())
     service, region = str(case["service"]), str(case["region"])
 
+    assert resolver.api_region(region) == case["api_region"]
+    # only cross-region endpoints are configured; everything else uses the default DNS
     assert resolver.endpoint_url(service, region) == case["endpoint_url"]
-    assert resolver.has_endpoint(service, region) is case["has_endpoint"]
-    assert resolver.reachable_from(service, region, "ap-east-1") is case["reachable_from_home"]
 
 
 def test_aws_endpoint_url_overrides_everything(
@@ -25,10 +25,9 @@ def test_aws_endpoint_url_overrides_everything(
     resolver = EndpointResolver(get_common_settings())
 
     assert resolver.endpoint_url("iam", "global") == "http://localhost:5000"
-    assert resolver.has_endpoint("iam", "global")
 
 
-def test_client_factory_routes_global_to_home_region(settings_env: dict[str, str]) -> None:
+def test_client_factory_routes_global_to_us_east_1(settings_env: dict[str, str]) -> None:
     factory = ClientFactory(EndpointResolver(get_common_settings()))
 
     global_client = factory.client("ec2", "global")

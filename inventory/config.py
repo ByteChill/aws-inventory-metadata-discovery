@@ -5,21 +5,16 @@ from __future__ import annotations
 import functools
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from inventory.errors import NotImplementedFeatureError
 
 GLOBAL_REGION = "global"
-
-
-class RegionCell(BaseModel):
-    region: str
-    # boto3 service name -> endpoint URL. An empty string means "default regional DNS",
-    # which only works inside the region's own VPC. Services not listed are unavailable.
-    endpoints: dict[str, str] = Field(default_factory=dict)
-    scheduled_queue_url: str | None = None
-    ondemand_queue_url: str | None = None
+# Fixed by AWS, not configuration: IAM / Route 53 APIs are served from us-east-1, and it is
+# enabled for every account (unlike the opt-in primary region ap-east-1), so STS
+# AssumeRoleWithSAML and ec2:DescribeRegions are called there too.
+US_EAST_1 = "us-east-1"
 
 
 def _config(prefix: str) -> SettingsConfigDict:
@@ -38,15 +33,17 @@ class CommonSettings(BaseSettings):
     # "emf": metrics as EMF log lines (Lambda extracts them); "api": buffered PutMetricData
     # (ECS awslogs does not extract EMF)
     metrics_mode: Literal["emf", "api"] = "emf"
-    home_region: str = "ap-east-1"
-    supported_regions: list[str] = Field(
-        default_factory=lambda: ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
+    # control plane: broker, planner, API, database, Redis
+    primary_region: str = "ap-east-1"
+    # regions that have a worker; only the planner and the API use this
+    scan_regions: list[str] = Field(
+        default_factory=lambda: ["ap-east-1", "eu-west-1", "eu-west-2", US_EAST_1]
     )
-    global_home_region: str = "us-east-1"
+    # Endpoint-specific DNS for cross-region calls only: {region: {service: url}}. Private
+    # DNS is not shared over VPC peering; same-region calls use the default DNS.
+    endpoints: dict[str, dict[str, str]] = Field(default_factory=dict)
     transport: Literal["peering", "lambda"] = "peering"
     history_sink: Literal["null", "outbox"] = "null"
-    cells: list[RegionCell] = Field(default_factory=list)
-    broker_function_name: str = "inventory-broker"
     account_region_max_age_hours: int = 24
     database_url: SecretStr | None = None
     database_secret_arn: str | None = None  # RDS-managed secret: username + password
@@ -61,23 +58,21 @@ class CommonSettings(BaseSettings):
             raise NotImplementedFeatureError("transport=lambda (方案 B) 未实现")
         if self.history_sink == "outbox":
             raise NotImplementedFeatureError("history_sink=outbox (变更历史) 未实现")
-        configured = {cell.region for cell in self.cells}
-        missing = [r for r in self.supported_regions if r not in configured]
-        if missing:
-            raise ValueError(f"supported regions without a cell: {missing}")
-        if self.global_home_region not in self.supported_regions:
-            raise ValueError("global_home_region must be one of supported_regions")
+        if US_EAST_1 not in self.scan_regions:
+            raise ValueError(f"scan_regions must include {US_EAST_1} (global resources)")
         return self
 
-    def find_cell(self, region: str) -> RegionCell | None:
-        lookup = self.global_home_region if region == GLOBAL_REGION else region
-        return next((c for c in self.cells if c.region == lookup), None)
+    @property
+    def name_prefix(self) -> str:
+        """Prefix of every resource name, as created by Terraform."""
+        return f"inventory-{self.environment}"
 
-    def cell(self, region: str) -> RegionCell:
-        found = self.find_cell(region)
-        if found is None:
-            raise KeyError(f"no cell configured for region {region}")
-        return found
+    @property
+    def broker_function_name(self) -> str:
+        return f"{self.name_prefix}-adfs-broker"
+
+    def queue_name(self, kind: str) -> str:
+        return f"{self.name_prefix}-{kind}"
 
 
 class BrokerSettings(BaseSettings):
@@ -92,7 +87,6 @@ class BrokerSettings(BaseSettings):
     redis_url: str
     redis_auth_secret_arn: str | None = None
     kms_key_id: str
-    sts_region: str = "ap-east-1"
     session_duration_seconds: int = 3600
     saml_refresh_margin_seconds: int = 300
     default_min_ttl_seconds: int = 1200
@@ -120,7 +114,8 @@ class PlannerSettings(BaseSettings):
     account_directory_function_name: str
     job_deadline_minutes: int = 210
     task_stale_minutes: int = 10
-    deleted_retention_days: int = 30
+    # soft-deleted resources are kept this long, then purged by maintenance
+    deleted_retention_days: int = Field(180, ge=1)
 
 
 class WorkerSettings(BaseSettings):
@@ -150,15 +145,34 @@ class ApiSettings(BaseSettings):
     search_timeout_ms: int = 5_000
     wait_max_seconds: int = 25
     wait_poll_interval_ms: int = 300
-    refresh_inline_max: int = 20
     refresh_max_arns: int = 100
-    refresh_parallelism: int = 8
-    refresh_thread_limit: int = 32
-    refresh_timeout_seconds: float = 15.0
     scan_job_deadline_minutes: int = 60
     refresh_job_deadline_minutes: int = 5
     tracing_enabled: bool = False
     otlp_endpoint: str = "http://localhost:4317"
+    ui_enabled: bool = True
+    ui_dir: str | None = None  # built web UI; defaults to inventory/api/ui (filled in the image)
+    # authentication (spec 10): "disabled" = anonymous with every role (local, migration period)
+    auth_mode: Literal["disabled", "enforced"] = "disabled"
+    jwt_jwks_url: str | None = None
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
+    jwt_algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
+    jwt_username_claim: str = "preferred_username"
+    jwt_roles_claim: str = "roles"
+    jwt_default_role: Literal["viewer", "operator", "admin"] = "viewer"
+
+    @model_validator(mode="after")
+    def _validate(self) -> ApiSettings:
+        if self.auth_mode == "enforced":
+            missing = [
+                name
+                for name in ("jwt_jwks_url", "jwt_issuer", "jwt_audience")
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(f"auth_mode=enforced requires {', '.join(missing)}")
+        return self
 
 
 @functools.cache

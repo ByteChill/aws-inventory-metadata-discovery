@@ -63,7 +63,7 @@ class ChangeEvent:  # v1 只生成、不持久化（NullChangeSink），见 spec
 
 
 class TypeStatus(StrEnum):
-    succeeded | failed | auth_denied | skipped_no_endpoint
+    succeeded | failed | auth_denied
 
 
 @dataclass
@@ -86,7 +86,6 @@ class Collector(ABC):
     resource_type: ClassVar[str]  # "AWS::EC2::Instance"
     service: ClassVar[str]  # boto3 服务名
     is_global: ClassVar[bool] = False
-    required_endpoints: ClassVar[tuple[str, ...]]  # 默认 (service,)
     depends_on: ClassVar[tuple[str, ...]] = ()
     drop_fields: ClassVar[tuple[str, ...]] = ()  # 从 data 中去掉的噪声字段（顶层 key）
     arn_pattern: ClassVar[re.Pattern[str]]  # 必须包含命名组 id；可包含 region、account
@@ -149,7 +148,7 @@ class Ec2DescribeCollector(Collector):
 class CollectorContext:
     account_id: str
     region: str  # 记录用的 region；全局资源为 'global'
-    api_region: str  # 实际调用 API 的 region；全局资源为 global_home_region
+    api_region: str  # 实际调用 API 的 region；全局资源为 us-east-1
     session: boto3.Session
     clients: ClientFactory
     full_refresh: bool
@@ -172,11 +171,8 @@ class Registry:
     def register(self, cls: type[Collector]) -> type[Collector]: ...
     def get(self, resource_type: str) -> type[Collector]: ...
     def all(self) -> list[type[Collector]]: ...
-    def for_region(
-        self, region: str, resolver: EndpointResolver, api_region: str
-    ) -> tuple[list[type[Collector]], list[type[Collector]]]:
-        ...
-        # 返回 (可用, 因缺少 endpoint 而跳过)；region == 'global' 时只返回 is_global 的类型
+    def applicable(self, region: str) -> list[type[Collector]]: ...
+        # region == 'global' 时只返回 is_global 的类型，否则只返回 regional 类型
 
     def route_arn(self, arn: str) -> tuple[type[Collector], ParsedArn] | None: ...
     def groups(self, types: Sequence[str]) -> list[list[type[Collector]]]:
@@ -277,7 +273,7 @@ class ScanEngine:
 
 1. 用 `context_scope(job_id, task_id, account_id, region)` 绑定日志上下文。
 2. `credentials.session(account_id)`；`AccessDeniedError` → 所有类型记为 `auth_denied`（`sink.record_skip`），直接返回。
-3. 确定类型：`task.resource_types` 或 `registry.for_region(...)`；缺少 endpoint 的类型记为 `skipped_no_endpoint`。
+3. 确定类型：`task.resource_types` 或 `registry.applicable(region)`（不判断 endpoint 是否存在，见 spec 08 R6）。
 4. `registry.groups(types)` 分组；各组用线程池并行执行（`type_concurrency`，提交时使用 `submit_with_context`），组内按拓扑序依次执行。
 5. 对每个类型：
    ```
@@ -322,7 +318,7 @@ def classify(exc: BaseException) -> ErrorInfo:   # ErrorInfo(code, message, retr
 |---|---|
 | `reconcile` 覆盖 §5 表格中所有情况，包括 kept 与重复 id | `engine/reconcile_cases.json`（每个 case 包含 index、current、kept、expected） |
 | 注册表：`groups` 分组与拓扑序、缺失依赖自动补入、循环依赖报错、`route_arn` | 测试内独立 `Registry` 实例 + 假 collector |
-| `for_region`：global 过滤、缺少 endpoint 的类型被跳过 | `foundation/settings.local.json` |
+| `applicable`：global / regional 过滤 | — |
 | `scan`：上游失败导致下游标记 `UPSTREAM_FAILED`；列表中途抛异常时不产生删除；`AccessDeniedError` 时全部为 `auth_denied` | 假 collector + 内存版 `ResultSink`（测试替身） |
 | `classify` 覆盖每一行 | `engine/client_errors.json` |
 | 上下文：线程池中执行的 collector 日志带有 `task_id` 与 `resource_type` | caplog |
@@ -344,3 +340,7 @@ def classify(exc: BaseException) -> ErrorInfo:   # ErrorInfo(code, message, retr
 - 获取凭证失败（非 AccessDenied）也会写 `scope_state(status=failed)`。
 - `ScanEngine.refresh` 对未注册的类型返回 `unsupported_type`。
 - `classify` 额外的错误码：其他 4xx `ClientError` → `AWS_<错误码>`（不可重试）；其他 `BotoCoreError` → `AWS_SDK_ERROR`（可重试）。
+
+### 发布与配置修订（spec 08 R6）
+
+- 删除 `required_endpoints`、`Registry.for_region`、`skipped_no_endpoint`：不再判断 endpoint 是否存在（基础设施由 infra 保证），每个适用的类型都会执行。`ScanEngine.refresh`（单个资源，供 API 进程内刷新）删除，刷新一律由 worker 按 `resource_ids` 执行。

@@ -1,0 +1,7 @@
+{
+  "auth_mode": "enforced",
+  "jwt_jwks_url": "https://sso.example.invalid/.well-known/jwks.json",
+  "jwt_issuer": "https://sso.example.invalid",
+  "jwt_audience": "aws-inventory",
+  "wait_poll_interval_ms": 20
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from fastapi import Request
 
@@ -11,6 +12,9 @@ from inventory.api.refresh import RefreshService
 from inventory.bootstrap import Runtime
 from inventory.config import ApiSettings
 
+if TYPE_CHECKING:
+    from inventory.api.auth import Authenticator
+
 
 @dataclass
 class ApiState:
@@ -18,6 +22,7 @@ class ApiState:
     runtime: Runtime
     queries: ResourceQueries
     refresh: RefreshService
+    auth: Authenticator
 
 
 def get_state(request: Request) -> ApiState:

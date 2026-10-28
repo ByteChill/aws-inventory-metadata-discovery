@@ -1,0 +1,102 @@
+{
+  "viewer": {
+    "claims": {
+      "preferred_username": "10000001",
+      "roles": [
+        "viewer"
+      ]
+    }
+  },
+  "operator": {
+    "claims": {
+      "preferred_username": "10000002",
+      "roles": [
+        "operator",
+        "unknown-role"
+      ]
+    }
+  },
+  "admin": {
+    "claims": {
+      "preferred_username": "10000003",
+      "roles": [
+        "admin"
+      ]
+    }
+  },
+  "no_roles": {
+    "claims": {
+      "preferred_username": "10000004"
+    }
+  },
+  "expired": {
+    "claims": {
+      "preferred_username": "10000001",
+      "roles": [
+        "viewer"
+      ]
+    },
+    "expires_in": -60
+  },
+  "wrong_issuer": {
+    "claims": {
+      "preferred_username": "10000001",
+      "iss": "https://evil.example.invalid"
+    }
+  },
+  "wrong_audience": {
+    "claims": {
+      "preferred_username": "10000001",
+      "aud": "another-app"
+    }
+  },
+  "wrong_key": {
+    "claims": {
+      "preferred_username": "10000001"
+    },
+    "key": "other"
+  },
+  "username_not_8_digits": {
+    "claims": {
+      "preferred_username": "alice"
+    }
+  },
+  "username_7_digits": {
+    "claims": {
+      "preferred_username": "1234567"
+    }
+  },
+  "no_exp": {
+    "claims": {
+      "preferred_username": "10000001"
+    },
+    "drop": [
+      "exp"
+    ]
+  },
+  "alg_hs256": {
+    "claims": {
+      "preferred_username": "10000001",
+      "roles": [
+        "admin"
+      ]
+    },
+    "alg": "HS256"
+  },
+  "roles_not_a_list": {
+    "claims": {
+      "preferred_username": "10000005",
+      "roles": "admin"
+    }
+  },
+  "username_trailing_newline": {
+    "claims": {
+      "preferred_username": "12345678\n"
+    }
+  },
+  "username_non_ascii_digits": {
+    "claims": {
+      "preferred_username": "١٢٣٤٥٦٧٨"
+    }
+  }
+}

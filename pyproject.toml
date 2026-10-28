@@ -4,15 +4,35 @@ version = "0.1.0"
 description = "Scan AWS resource metadata across accounts and regions and serve it over an API"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
+# Shared by every component; each deployable adds its own extra (see deploy/Containerfile).
 dependencies = [
-    "alembic>=1.14",
-    "anyio>=4.6",
     "aws-lambda-powertools[tracer]>=3.3",
     "boto3>=1.35",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
+
+[project.optional-dependencies]
+broker = [
     "cryptography>=43",
     "defusedxml>=0.7",
-    "fastapi>=0.115",
     "httpx>=0.27",
+    "redis>=5.2",
+]
+planner = [
+    "psycopg[binary]>=3.2,<4",
+    "python-ulid>=3.0",
+    "sqlalchemy>=2.0.36",
+]
+worker = [
+    "alembic>=1.14",  # the migrate task runs from the worker image
+    "psycopg[binary]>=3.2,<4",
+    "python-ulid>=3.0",
+    "sqlalchemy>=2.0.36",
+]
+api = [
+    "anyio>=4.6",
+    "fastapi>=0.115",
     "opentelemetry-exporter-otlp-proto-grpc>=1.28",
     "opentelemetry-instrumentation-botocore>=0.49b0",
     "opentelemetry-instrumentation-fastapi>=0.49b0",
@@ -20,17 +40,16 @@ dependencies = [
     "opentelemetry-propagator-aws-xray>=1.0",
     "opentelemetry-sdk>=1.28",
     "opentelemetry-sdk-extension-aws>=2.0",
-    "psycopg[binary,pool]>=3.2",
-    "pydantic>=2.9",
-    "pydantic-settings>=2.6",
+    "psycopg[binary]>=3.2,<4",
+    "pyjwt[crypto]>=2.9",
     "python-ulid>=3.0",
-    "redis>=5.2",
     "sqlalchemy[asyncio]>=2.0.36",
     "uvicorn[standard]>=0.32",
 ]
 
 [dependency-groups]
 dev = [
+    "inventory[api,broker,planner,worker]",
     "boto3-stubs[essential,iam,route53,sts,kms,secretsmanager,ecs,stepfunctions]>=1.35",
     "fakeredis[lua]>=2.26",
     "moto[server]>=5.0.20",
