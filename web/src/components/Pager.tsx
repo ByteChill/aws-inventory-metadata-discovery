@@ -46,9 +46,13 @@ export function useKeysetPages<T>(
   const [nav, setNav] = useState<{ key: string; cursors: Array<string | undefined> }>({ key, cursors: [undefined] });
   const cursors = nav.key === key ? nav.cursors : [undefined];
   const cursor = cursors[cursors.length - 1];
-  const page = useAsync(() => load(cursor, pageSize), [key, cursor]);
+  // each response is tagged with its query, so a previous query's page (and total) is
+  // never shown as this one's while the new request is in flight
+  const result = useAsync(() => load(cursor, pageSize).then((data) => ({ key, cursor, data })), [key, cursor]);
+  const current = result.data?.key === key && result.data.cursor === cursor ? result.data.data : null;
+  const page: AsyncState<Page<T>> = { ...result, data: current };
   const [totals, setTotals] = useState<{ key: string; total: number | null }>({ key: '', total: null });
-  if (page.data && page.data.total != null && totals.key !== key) setTotals({ key, total: page.data.total });
+  if (current && current.total != null && totals.key !== key) setTotals({ key, total: current.total });
 
   return {
     page,

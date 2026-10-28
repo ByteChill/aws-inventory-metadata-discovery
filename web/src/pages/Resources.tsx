@@ -5,6 +5,7 @@ import { Drawer } from 'baseui/drawer';
 import { Input } from 'baseui/input';
 import { TableBuilder, TableBuilderColumn } from 'baseui/table-semantic';
 import { toaster } from 'baseui/toast';
+import { StatefulTooltip } from 'baseui/tooltip';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -70,8 +71,6 @@ export function ResourcesPage() {
     for (const v of Array.isArray(value) ? value : [value]) if (v) next.append(name, v);
     setParams(next, { replace: true });
   };
-  const moreActive = Boolean(params.get('tag') || filters.include_deleted);
-  const [showMore, setShowMore] = useState(moreActive);
 
   // free-text filters apply after typing stops (selects apply at once)
   const [text, setText] = useState({ name_prefix: '', tag: '' });
@@ -112,6 +111,62 @@ export function ResourcesPage() {
       {label}
     </button>
   );
+
+  // the Name tag is already the resource name; the rest are chips that filter by themselves
+  const TAGS_SHOWN = 3;
+  // cards are buttons themselves, so their chips are plain text (no nested buttons)
+  const tagChips = (r: Resource, interactive = true) => {
+    const tags = Object.entries(r.tags)
+      .filter(([k]) => k !== 'Name')
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (!tags.length) return <Secondary>—</Secondary>;
+    const chip = css({
+      all: 'unset',
+      cursor: 'pointer',
+      maxWidth: '16rem',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      padding: `0 ${theme.sizing.scale200}`,
+      borderRadius: theme.borders.radius200,
+      backgroundColor: theme.colors.backgroundTertiary,
+      ...theme.typography.ParagraphXSmall,
+      color: theme.colors.contentPrimary,
+      ':hover': { color: theme.colors.contentAccent },
+    });
+    const hidden = tags.slice(TAGS_SHOWN);
+    return (
+      <div className={css({ display: 'flex', flexWrap: 'wrap', gap: theme.sizing.scale100 })}>
+        {tags.slice(0, TAGS_SHOWN).map(([k, v]) =>
+          interactive ? (
+          <button
+            key={k}
+            type="button"
+            title={`${k}=${v}`}
+            className={chip}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFilter('tag', `${k}=${v}`);
+            }}
+          >
+            {k}={v}
+          </button>
+          ) : (
+            <span key={k} className={chip}>
+              {k}={v}
+            </span>
+          ),
+        )}
+        {hidden.length ? (
+          <StatefulTooltip content={() => <div>{hidden.map(([k, v]) => <div key={k}>{`${k}=${v}`}</div>)}</div>}>
+            <span className={css({ ...theme.typography.ParagraphXSmall, color: theme.colors.contentSecondary, cursor: 'default' })}>
+              +{hidden.length}
+            </span>
+          </StatefulTooltip>
+        ) : null}
+      </div>
+    );
+  };
 
   const fieldGrid = css({
     display: 'grid',
@@ -166,30 +221,22 @@ export function ResourcesPage() {
             clearable
           />
           </div>
-          <Button size={SIZE.compact} kind={KIND.tertiary} onClick={() => setShowMore((v) => !v)}>
-            {showMore ? t('Fewer filters', '收起筛选') : t('More filters', '更多筛选')}
-            {moreActive && !showMore ? ' •' : ''}
+          <div className={css({ gridColumn: narrow ? 'auto' : 'span 2' })}>
+            <Input
+              size={SIZE.compact}
+              value={text.tag}
+              placeholder={t('Tag: Key=Value or Key', '标签：Key=Value 或 Key')}
+              onChange={(e) => typeText('tag', e.currentTarget.value)}
+              clearable
+            />
+          </div>
+          <Checkbox checked={filters.include_deleted} onChange={(e) => setFilter('include_deleted', e.currentTarget.checked ? 'true' : '')}>
+            {t('Include deleted', '包含已删除')}
+          </Checkbox>
+          <Button size={SIZE.compact} kind={KIND.tertiary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
+            {t('Clear all', '清除全部')}
           </Button>
         </div>
-        {showMore ? (
-          <div className={css({ ...{ marginTop: theme.sizing.scale400 } })}>
-            <div className={fieldGrid}>
-              <Input
-                size={SIZE.compact}
-                value={text.tag}
-                placeholder={t('Tag: Key=Value or Key', '标签：Key=Value 或 Key')}
-                onChange={(e) => typeText('tag', e.currentTarget.value)}
-                clearable
-              />
-              <Checkbox checked={filters.include_deleted} onChange={(e) => setFilter('include_deleted', e.currentTarget.checked ? 'true' : '')}>
-                {t('Include deleted', '包含已删除')}
-              </Checkbox>
-              <Button size={SIZE.compact} kind={KIND.tertiary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
-                {t('Clear all', '清除全部')}
-              </Button>
-            </div>
-          </div>
-        ) : null}
       </Panel>
 
       <Panel title={pages.total != null ? t(`${pages.total.toLocaleString()} resources`, `共 ${pages.total.toLocaleString()} 个资源`) : t('Resources', '资源')}>
@@ -226,6 +273,7 @@ export function ResourcesPage() {
                 <Secondary>
                   {r.region} · <When value={r.last_changed_at} />
                 </Secondary>
+                {Object.keys(r.tags).some((k) => k !== 'Name') ? tagChips(r, false) : null}
                 {r.deleted_at ? (
                   <span>
                     <StatusTag status="deleted" />
@@ -277,6 +325,7 @@ export function ResourcesPage() {
                 </>
               )}
             </TableBuilderColumn>
+            <TableBuilderColumn<Resource> header={t('Tags', '标签')}>{(r) => tagChips(r)}</TableBuilderColumn>
             <TableBuilderColumn<Resource> header={t('Last changed', '最近变化')}>
               {(r) => (
                 <>
