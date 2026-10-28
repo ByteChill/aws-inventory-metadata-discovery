@@ -8,6 +8,7 @@ import { Provider as StyletronProvider } from 'styletron-react';
 
 import { App } from './App';
 import { AuthProvider } from './auth/AuthContext';
+import { I18nProvider } from './i18n';
 
 const engine = new Styletron();
 const THEME_KEY = 'inventory.theme';
@@ -29,6 +30,8 @@ function Root() {
     document.body.style.margin = '0';
     document.body.style.backgroundColor = theme.colors.backgroundSecondary;
     document.body.style.color = theme.colors.contentPrimary;
+    // layers (popovers, drawers) render under <body>: give it the theme font too
+    document.body.style.fontFamily = String(theme.typography.ParagraphMedium.fontFamily);
   }, [theme]);
   const toggle = () =>
     setDark((value) => {
@@ -43,11 +46,13 @@ function Root() {
     <StyletronProvider value={engine}>
       <BaseProvider theme={theme}>
         <ToasterContainer autoHideDuration={5000} placement="bottomRight">
-          <HashRouter>
-            <AuthProvider>
-              <App dark={dark} onToggleTheme={toggle} />
-            </AuthProvider>
-          </HashRouter>
+          <I18nProvider>
+            <HashRouter>
+              <AuthProvider>
+                <App dark={dark} onToggleTheme={toggle} />
+              </AuthProvider>
+            </HashRouter>
+          </I18nProvider>
         </ToasterContainer>
       </BaseProvider>
     </StyletronProvider>

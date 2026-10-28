@@ -10,13 +10,15 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import Engine, select
 
 from inventory.api.app import create_app
 from inventory.bootstrap import Runtime
-from inventory.db import AccountRegionRepository, JobRepository, scan_task
+from inventory.db import AccountRegionRepository, AccountRepository, JobRepository, scan_task
+from inventory.models import DirectoryAccount
 from inventory.observability import ContextFilter
 from tests.api.conftest import app_settings, new_async_engine, running_worker, without_request_id
+from tests.conftest import FROZEN_NOW
 from tests.helpers import assert_matches_fixture, load_fixture
 from tests.planner.conftest import drain, make_runtime
 
@@ -233,6 +235,38 @@ def test_coverage_and_resource_types(client: TestClient) -> None:
     assert coverage["enabled_regions"] == ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
     vpc = next(t for t in types if t["resource_type"] == "AWS::EC2::VPC")
     assert vpc["enabled_regions"] == ["ap-east-1", "eu-west-1", "eu-west-2", "us-east-1"]
+
+
+@pytest.mark.usefixtures("seeded")
+def test_eim_and_account_type_dimension(client: TestClient, db: Engine) -> None:
+    accounts = [DirectoryAccount(**a) for a in load_fixture("api/accounts.seed.json")]
+    with db.begin() as conn:
+        AccountRepository().upsert(conn, accounts, FROZEN_NOW)
+
+    def ids(response: Any) -> list[str]:
+        return sorted(r["resource_id"] for r in response.json()["items"])
+
+    by_eim = client.get("/v1/resources/stats", params={"group_by": "eim"}).json()
+    counted = client.get(
+        "/v1/resources/stats",
+        params={"group_by": "eim,account_type", "include_deleted": "true"},
+    ).json()
+    vpc = client.get("/v1/resources/by-arn", params={"arn": VPC_A}).json()
+    search = client.post("/v1/resources/search", json={"account_types": ["prod", "dev"]})
+    actual = {
+        "by_eim": by_eim["groups"],
+        "by_eim_counted": counted["groups"],
+        "eim_20142209": ids(client.get("/v1/resources", params={"eim": "20142209"})),
+        "prod": ids(client.get("/v1/resources/all", params={"account_type": "prod"})),
+        "search_prod_or_dev": ids(search),
+        "vpc_account": {k: vpc[k] for k in ("account_name", "eim", "account_type")},
+        "accounts": client.get("/v1/accounts").json()["items"],
+    }
+    coverage = client.get("/v1/accounts/123456789012/coverage").json()
+
+    assert actual == load_fixture("api/accounts.eim.expected.json")
+    assert coverage["account"]["name"] == "payments-dev"
+    assert client.get("/v1/resources", params={"account_type": "qa"}).status_code == 422
 
 
 # --------------------------------------------------------------------------- scans

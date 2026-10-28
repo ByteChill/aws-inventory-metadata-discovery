@@ -129,7 +129,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - 所有路由在 `/v1` 下；请求与响应模型在 `api/schemas.py`，与 `docs/api.md` 一一对应。
 - 接口有任何变化：同时更新 `docs/api.md` 与 OpenAPI 快照 `tests/fixtures/api/openapi.json`。
 - 分页只用 keyset cursor，不提供 offset。
-- 每个 `/v1` 路由都声明需要的权限（`Depends(require("..."))`，spec 10）；新增路由时同步更新 spec 10 §1 的权限表与 `tests/fixtures/api/auth.permission_cases.json`。
+- 每个 `/v1` 路由都声明需要的权限（`Depends(require("..."))`，spec 10）；新增路由时同步更新 spec 10 §1 的权限表与 `tests/fixtures/api/auth.permissions.cases.json`。
 - 错误统一为 `{"error": {"code", "message", "request_id", "details"}}`，code 取自 `errors.py`。
 
 ## Git

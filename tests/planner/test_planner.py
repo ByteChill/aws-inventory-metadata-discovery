@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
 
@@ -9,10 +10,10 @@ import pytest
 from sqlalchemy import Engine, select
 
 from inventory.config import clear_settings_cache, get_planner_settings
-from inventory.db import JobRepository, ResourceRepository, account_region, scan_task
+from inventory.db import JobRepository, ResourceRepository, account, account_region, scan_task
 from inventory.errors import BadRequestError, UpstreamError
 from inventory.handlers.planner_lambda import Planner
-from inventory.models import NewTask, ScanScope, ScanTaskMessage
+from inventory.models import DirectoryAccount, NewTask, ScanScope, ScanTaskMessage
 from inventory.scheduling import AccountDirectoryClient, parse_account_directory
 from inventory.transport import DispatchResult
 from tests.helpers import load_fixture
@@ -22,7 +23,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("moto_env", "froz
 
 
 class FixtureDirectory:
-    def list_accounts(self) -> list[str]:
+    def list_accounts(self) -> list[DirectoryAccount]:
         return parse_account_directory(load_fixture("planner/account_directory.response.json"))
 
 
@@ -225,9 +226,34 @@ def test_maintenance_purges_after_the_configured_retention(
     assert (kept, purged) == (0, 1)
 
 
+def test_list_targets_records_every_listed_account(db: Engine) -> None:
+    p = planner(db)
+    job_id = p.handle(event("create_job"), no_time_left)["job_id"]
+    p.handle(event("list_targets", job_id), no_time_left)
+
+    class ShorterDirectory:
+        def list_accounts(self) -> list[DirectoryAccount]:
+            return FixtureDirectory().list_accounts()[1:]
+
+    # an account that drops out of the directory is no longer scanned but keeps its EIM
+    Planner(make_runtime(db), get_planner_settings(), ShorterDirectory()).list_targets(job_id)  # type: ignore[arg-type]
+    with db.connect() as conn:
+        rows = conn.execute(
+            select(
+                account.c.account_id, account.c.eim, account.c.account_type, account.c.status
+            ).order_by(account.c.account_id)
+        ).all()
+
+    expected = load_fixture("planner/account_directory.expected.json")
+    assert [tuple(r) for r in rows] == [
+        (a["account_id"], a["eim"], a["account_type"], a["status"]) for a in expected
+    ]
+
+
 def test_account_directory_adapter() -> None:
     body = load_fixture("planner/account_directory.response.json")
-    assert parse_account_directory(body)[-1] == "100000000006"  # SUSPENDED dropped
+    parsed = parse_account_directory(body)
+    assert [asdict(a) for a in parsed] == load_fixture("planner/account_directory.expected.json")
     with pytest.raises(UpstreamError):
         parse_account_directory({"unexpected": True})
 
@@ -243,7 +269,7 @@ def test_account_directory_adapter() -> None:
             return FakeLambda()
 
     client = AccountDirectoryClient(Clients(), "aws-inventory-account-directory", "ap-east-1")  # type: ignore[arg-type]
-    assert len(client.list_accounts()) == 6
+    assert client.list_accounts() == parsed
 
 
 def test_message_contract_fixture() -> None:

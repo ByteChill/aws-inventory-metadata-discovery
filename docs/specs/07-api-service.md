@@ -16,7 +16,7 @@ inventory/api/app.py          # create_app(settings)、lifespan、依赖注入�
 inventory/api/middleware.py   # RequestContextMiddleware
 inventory/api/errors.py       # 异常处理器、ErrorResponse
 inventory/api/schemas.py      # 与 api.md 一一对应的 pydantic 模型
-inventory/api/resources.py    # /v1/resources*（含路径形式 /all、/{account}/{region}/{type|arn}）、/v1/resource-types、/v1/accounts/{id}/coverage
+inventory/api/resources.py    # /v1/resources*（含路径形式 /all、/{account}/{region}/{type|arn}）、/v1/resource-types、/v1/accounts、/v1/accounts/{id}/coverage
 inventory/api/scans.py        # /v1/scans*、/v1/resources/refresh
 inventory/api/auth.py, keys.py # 认证、RBAC、/v1/me 与 API key（spec 10）
 inventory/api/ui/             # 构建好的 web UI（镜像中由 web/ 构建，不进 git；spec 10）

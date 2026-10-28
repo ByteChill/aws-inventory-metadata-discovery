@@ -8,7 +8,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from inventory.models import ACCOUNT_ID_PATTERN, JobStatus, RefreshStatus, TaskStatus, Trigger
+from inventory.models import (
+    ACCOUNT_ID_PATTERN,
+    AccountType,
+    JobStatus,
+    RefreshStatus,
+    TaskStatus,
+    Trigger,
+)
 
 ARN_PATTERN = r"^arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:\d{0,12}:.+$"
 SortField = Literal["last_changed_at", "resource_id"]
@@ -52,12 +59,17 @@ class Resource(BaseModel):
     observed_at: datetime
     deleted_at: datetime | None = None
     verified_at: datetime | None = None
+    account_name: str | None = None
+    eim: str | None = None
+    account_type: str | None = None
 
 
 class SearchRequest(_Request):
     account_ids: list[str] | None = Field(None, max_length=1000)
     regions: list[str] | None = Field(None, max_length=50)
     resource_types: list[str] | None = Field(None, max_length=100)
+    eims: list[str] | None = Field(None, max_length=1000)
+    account_types: list[AccountType] | None = Field(None, max_length=3)
     tags: dict[str, str] | None = Field(None, max_length=20)
     tag_keys: list[str] | None = Field(None, max_length=20)
     name_prefix: str | None = Field(None, max_length=256)
@@ -160,8 +172,22 @@ class CoverageScope(BaseModel):
     error_message: str | None = None
 
 
+class Account(BaseModel):
+    account_id: str
+    name: str | None = None
+    eim: str | None = None
+    account_type: str | None = None
+    status: str
+    listed_at: datetime
+
+
+class AccountsResponse(BaseModel):
+    items: list[Account]
+
+
 class CoverageResponse(BaseModel):
     account_id: str
+    account: Account | None = None
     enabled_regions: list[str]
     regions_checked_at: datetime | None = None
     scopes: list[CoverageScope]

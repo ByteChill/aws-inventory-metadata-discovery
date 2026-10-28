@@ -20,13 +20,13 @@ broker = [
     "redis>=5.2",
 ]
 planner = [
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary]>=3.2,<4",
     "python-ulid>=3.0",
     "sqlalchemy>=2.0.36",
 ]
 worker = [
     "alembic>=1.14",  # the migrate task runs from the worker image
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary]>=3.2,<4",
     "python-ulid>=3.0",
     "sqlalchemy>=2.0.36",
 ]
@@ -40,7 +40,7 @@ api = [
     "opentelemetry-propagator-aws-xray>=1.0",
     "opentelemetry-sdk>=1.28",
     "opentelemetry-sdk-extension-aws>=2.0",
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary]>=3.2,<4",
     "pyjwt[crypto]>=2.9",
     "python-ulid>=3.0",
     "sqlalchemy[asyncio]>=2.0.36",

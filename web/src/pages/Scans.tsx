@@ -13,152 +13,143 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { JOB_STATUSES, type ScanJob, type ScanScope } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { AppLink, ErrorNotice, Mono, PageTitle, Panel, StatusTag, formatTime, scopeText, shortType } from '../components/common';
+import {
+  AppLink,
+  ErrorNotice,
+  Mono,
+  PageTitle,
+  Panel,
+  Secondary,
+  StatusTag,
+  When,
+  changeSummary,
+  startedBy,
+  ScopeTag,
+  tableOverrides,
+  useNarrow,
+} from '../components/common';
+import { Pager, useKeysetPages } from '../components/Pager';
 import { useAsync } from '../components/useAsync';
+import { useI18n } from '../i18n';
+import { statusLabel, typeLabel } from '../i18n/labels';
 
 type Level = 'account' | 'region' | 'type' | 'arn';
+type Query = Record<'status' | 'trigger' | 'account_id', string | undefined>;
 
 export function ScansPage() {
   const [css, theme] = useStyletron();
   const { can } = useAuth();
+  const { t, lang } = useI18n();
+  const narrow = useNarrow();
   const [params, setParams] = useSearchParams();
-  const [query, setQuery] = useState<{ status?: string; trigger?: string; account_id?: string }>({});
-  const [draft, setDraft] = useState(query);
-  const key = JSON.stringify(query);
-  const currentKey = useRef(key);
-  currentKey.current = key;
-  const first = useAsync(() => api.scans(query), [key]);
-  const [items, setItems] = useState<ScanJob[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [more, setMore] = useState<{ loading: boolean; error: unknown }>({ loading: false, error: null });
-  useEffect(() => {
-    setItems([]);
-    setCursor(null);
-    setMore({ loading: false, error: null });
-  }, [key]);
-  useEffect(() => {
-    if (first.data) {
-      setItems(first.data.items);
-      setCursor(first.data.next_cursor);
-    }
-  }, [first.data]);
-
-  // the cursor belongs to the query it was issued for: "Load more" reuses `query`, and a page
-  // that arrives after the filters changed is dropped
-  const loadMore = async () => {
-    if (!cursor) return;
-    const issuedFor = key;
-    setMore({ loading: true, error: null });
-    try {
-      const page = await api.scans(query, cursor);
-      if (currentKey.current !== issuedFor) return;
-      setItems((current) => [...current, ...page.items]);
-      setCursor(page.next_cursor);
-      setMore({ loading: false, error: null });
-    } catch (error) {
-      if (currentKey.current === issuedFor) setMore({ loading: false, error });
-    }
+  const query: Query = {
+    status: params.get('status') ?? undefined,
+    trigger: params.get('trigger') ?? undefined,
+    account_id: params.get('account_id') ?? undefined,
   };
+  const key = JSON.stringify(query);
+  const setFilter = (name: keyof Query, value: string) => {
+    const next = new URLSearchParams(params);
+    next.delete('new');
+    if (value) next.set(name, value);
+    else next.delete(name);
+    setParams(next, { replace: true });
+  };
+  const [account, setAccount] = useState(query.account_id ?? '');
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  const pages = useKeysetPages(key, (cursor, limit) => api.scans(query, cursor, limit));
+  const first = pages.page;
+  const items: ScanJob[] = first.data?.items ?? [];
 
   const modalOpen = params.get('new') === '1' && can('scans:write');
-  const closeModal = () => setParams(new URLSearchParams());
+  const closeModal = () => {
+    const next = new URLSearchParams(params);
+    for (const k of ['new', 'region', 'resource_type', 'arn']) next.delete(k);
+    if (!query.account_id) next.delete('account_id');
+    setParams(next, { replace: true });
+  };
 
   return (
     <>
       <PageTitle
-        title="Scans"
-        subtitle="Scan jobs from the schedule and from people or services, with their progress."
+        title={t('Scans', '扫描')}
+        subtitle={t('Scheduled scans and scans started by people or services.', '定时扫描，以及由用户或服务发起的扫描。')}
         actions={
-          can('scans:write') ? (
-            <Button size={SIZE.compact} onClick={() => setParams(new URLSearchParams({ new: '1' }))}>
-              New scan
-            </Button>
-          ) : null
+          <Button size={SIZE.compact} onClick={() => setParams(new URLSearchParams({ new: '1' }))}>
+            {t('New scan', '发起扫描')}
+          </Button>
         }
       />
       <Panel>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setQuery(draft);
-          }}
+        <div
           className={css({
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            columnGap: theme.sizing.scale500,
-            alignItems: 'end',
+            gridTemplateColumns: narrow ? '1fr' : 'repeat(3, minmax(180px, 1fr))',
+            gap: theme.sizing.scale400,
+            alignItems: 'center',
           })}
         >
-          <div>
-          <FormControl label="Status">
-            <Select
-              size={SIZE.compact}
-              options={JOB_STATUSES.map((s) => ({ id: s, label: s }))}
-              value={draft.status ? [{ id: draft.status, label: draft.status }] : []}
-              placeholder="Any status"
-              onChange={({ value }) => setDraft({ ...draft, status: value[0] ? String(value[0].id) : undefined })}
-            />
-          </FormControl>
-          </div>
-          <div>
-          <FormControl label="Trigger">
-            <Select
-              size={SIZE.compact}
-              options={[
-                { id: 'api', label: 'api' },
-                { id: 'schedule', label: 'schedule' },
-              ]}
-              value={draft.trigger ? [{ id: draft.trigger, label: draft.trigger }] : []}
-              placeholder="Any trigger"
-              onChange={({ value }) => setDraft({ ...draft, trigger: value[0] ? String(value[0].id) : undefined })}
-            />
-          </FormControl>
-          </div>
-          <div>
-          <FormControl label="Account">
-            <Input
-              size={SIZE.compact}
-              value={draft.account_id ?? ''}
-              onChange={(e) => setDraft({ ...draft, account_id: e.currentTarget.value.trim() || undefined })}
-            />
-          </FormControl>
-          </div>
-          <div className={css({ marginBottom: theme.sizing.scale600 })}>
-            <Button size={SIZE.compact} type="submit">
-              Filter
-            </Button>
-          </div>
-        </form>
+          <Select
+            size={SIZE.compact}
+            options={JOB_STATUSES.map((s) => ({ id: s, label: statusLabel(s, lang) }))}
+            value={query.status ? [{ id: query.status, label: statusLabel(query.status, lang) }] : []}
+            placeholder={t('Any status', '全部状态')}
+            onChange={({ value }) => setFilter('status', String(value[0]?.id ?? ''))}
+          />
+          <Select
+            size={SIZE.compact}
+            options={[
+              { id: 'api', label: t('Started by people or services', '由用户或服务发起') },
+              { id: 'schedule', label: t('Scheduled', '定时扫描') },
+            ]}
+            value={query.trigger ? [{ id: query.trigger, label: query.trigger === 'api' ? t('Started by people or services', '由用户或服务发起') : t('Scheduled', '定时扫描') }] : []}
+            placeholder={t('Any origin', '全部来源')}
+            onChange={({ value }) => setFilter('trigger', String(value[0]?.id ?? ''))}
+          />
+          <Input
+            size={SIZE.compact}
+            value={account}
+            placeholder={t('Account ID', '账号 ID')}
+            clearable
+            onChange={(e) => {
+              const value = e.currentTarget.value;
+              setAccount(value);
+              clearTimeout(timer.current);
+              timer.current = setTimeout(() => setFilter('account_id', value.trim()), 400);
+            }}
+          />
+        </div>
       </Panel>
-      <Panel title="Jobs">
+      <Panel>
         <ErrorNotice error={first.error} />
         <div className={css({ overflowX: 'auto' })}>
-          <TableBuilder data={items} isLoading={first.loading} emptyMessage="No jobs match">
-            <TableBuilderColumn<ScanJob> header="Job">
+          <TableBuilder data={items} isLoading={first.loading} emptyMessage={t('No scans match', '没有符合条件的扫描')} overrides={tableOverrides}>
+            <TableBuilderColumn<ScanJob> header={t('Scan ID', '扫描 ID')}>
               {(job) => (
                 <AppLink to={`/scans/${encodeURIComponent(job.job_id)}`}>
                   <Mono>{job.job_id}</Mono>
                 </AppLink>
               )}
             </TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Scope">{(job) => scopeText(job.scope)}</TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Status">{(job) => <StatusTag status={job.status} />}</TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Tasks" numeric>
-              {(job) => (job.stats.tasks_total != null ? `${job.stats.tasks_done ?? 0} / ${job.stats.tasks_total}` : '—')}
+            <TableBuilderColumn<ScanJob> header={t('Scope', '范围')}>{(job) => <ScopeTag scope={job.scope} />}</TableBuilderColumn>
+            <TableBuilderColumn<ScanJob> header={t('Status', '状态')}>
+              {(job) => (
+                <>
+                  <StatusTag status={job.status} />
+                  {job.stats.tasks_total && !job.finished_at ? (
+                    <Secondary>{t(`${job.stats.tasks_done ?? 0} of ${job.stats.tasks_total} done`, `已完成 ${job.stats.tasks_done ?? 0}/${job.stats.tasks_total}`)}</Secondary>
+                  ) : null}
+                </>
+              )}
             </TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Requested by">{(job) => job.requested_by ?? job.trigger}</TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Created">{(job) => formatTime(job.created_at)}</TableBuilderColumn>
-            <TableBuilderColumn<ScanJob> header="Finished">{(job) => formatTime(job.finished_at)}</TableBuilderColumn>
+            <TableBuilderColumn<ScanJob> header={t('Result', '结果')}>{(job) => (job.finished_at ? changeSummary(job.stats, lang) : '—')}</TableBuilderColumn>
+            <TableBuilderColumn<ScanJob> header={t('Started by', '发起人')}>{(job) => startedBy(job, lang)}</TableBuilderColumn>
+            <TableBuilderColumn<ScanJob> header={t('Started', '开始时间')}>{(job) => <When value={job.created_at} />}</TableBuilderColumn>
+            <TableBuilderColumn<ScanJob> header={t('Finished', '完成时间')}>{(job) => <When value={job.finished_at} />}</TableBuilderColumn>
           </TableBuilder>
         </div>
-        <ErrorNotice error={more.error} />
-        {cursor && !first.loading ? (
-          <div className={css({ marginTop: theme.sizing.scale600 })}>
-            <Button size={SIZE.compact} kind={KIND.secondary} isLoading={more.loading} onClick={() => void loadMore()}>
-              Load more
-            </Button>
-          </div>
-        ) : null}
+        <Pager pages={pages} />
       </Panel>
       <NewScanModal isOpen={modalOpen} onClose={closeModal} initial={params} />
     </>
@@ -168,6 +159,7 @@ export function ScansPage() {
 function NewScanModal({ isOpen, onClose, initial }: { isOpen: boolean; onClose: () => void; initial: URLSearchParams }) {
   const [css, theme] = useStyletron();
   const navigate = useNavigate();
+  const { t, lang } = useI18n();
   const types = useAsync(() => api.resourceTypes(), []);
   const [level, setLevel] = useState<Level>('account');
   const [form, setForm] = useState({ account_id: '', region: '', resource_type: '', arn: '' });
@@ -188,11 +180,13 @@ function NewScanModal({ isOpen, onClose, initial }: { isOpen: boolean; onClose: 
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allTypes = types.data?.items ?? [];
-  const regions = ['global', ...new Set(allTypes.flatMap((t) => t.enabled_regions))].filter((r, i, a) => a.indexOf(r) === i);
+  const regions = ['global', ...new Set(allTypes.flatMap((x) => x.enabled_regions))].filter((r, i, a) => a.indexOf(r) === i);
   const typeOptions = allTypes
-    .filter((t) => !form.region || t.enabled_regions.includes(form.region))
-    .map((t) => ({ id: t.resource_type, label: shortType(t.resource_type) }));
-  const pick = (value: string): Value => (value ? [{ id: value, label: value.startsWith('AWS::') ? shortType(value) : value }] : []);
+    .filter((x) => !form.region || x.enabled_regions.includes(form.region))
+    .map((x) => ({ id: x.resource_type, label: typeLabel(x.resource_type, lang) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const regionValue: Value = form.region ? [{ id: form.region, label: form.region }] : [];
+  const typeValue: Value = form.resource_type ? [{ id: form.resource_type, label: typeLabel(form.resource_type, lang) }] : [];
 
   const scope: ScanScope =
     level === 'arn'
@@ -206,11 +200,11 @@ function NewScanModal({ isOpen, onClose, initial }: { isOpen: boolean; onClose: 
     level === 'arn'
       ? !scope.arn && 'ARN'
       : !scope.account_id
-        ? 'Account ID'
+        ? t('Account ID', '账号 ID')
         : level === 'region' && !scope.region
-          ? 'Region'
+          ? t('Region', '区域')
           : level === 'type' && !scope.resource_type
-            ? 'Resource type'
+            ? t('Resource type', '资源类型')
             : null;
 
   const submit = async () => {
@@ -219,7 +213,7 @@ function NewScanModal({ isOpen, onClose, initial }: { isOpen: boolean; onClose: 
     setError(null);
     try {
       const job = await api.startScan(scope);
-      if (job.deduplicated) toaster.info('A job with the same scope is already running; showing it.', {});
+      if (job.deduplicated) toaster.info(t('The same scan is already running; showing it.', '相同范围的扫描正在进行，已为你打开。'), {});
       onClose();
       navigate(`/scans/${encodeURIComponent(job.job_id)}`);
     } catch (failure) {
@@ -231,64 +225,58 @@ function NewScanModal({ isOpen, onClose, initial }: { isOpen: boolean; onClose: 
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} role={ROLE.dialog} size="default">
-      <ModalHeader>New scan</ModalHeader>
+      <ModalHeader>{t('New scan', '发起扫描')}</ModalHeader>
       <ModalBody>
-        <RadioGroup value={level} onChange={(e) => setLevel(e.currentTarget.value as Level)} align="horizontal">
-          <Radio value="account">Account</Radio>
-          <Radio value="region">Account + region</Radio>
-          <Radio value="type">Account + type</Radio>
-          <Radio value="arn">Single ARN</Radio>
-        </RadioGroup>
-        <div className={css({ marginTop: theme.sizing.scale500 })}>
+        <FormControl label={t('What to scan', '扫描什么')}>
+          <RadioGroup value={level} onChange={(e) => setLevel(e.currentTarget.value as Level)}>
+            <Radio value="account">{t('A whole account', '整个账号')}</Radio>
+            <Radio value="region">{t('One region of an account', '账号的某个区域')}</Radio>
+            <Radio value="type">{t('One resource type of an account', '账号的某类资源')}</Radio>
+            <Radio value="arn">{t('A single resource (ARN)', '单个资源（ARN）')}</Radio>
+          </RadioGroup>
+        </FormControl>
+        <div className={css({ marginTop: theme.sizing.scale300 })}>
           {level === 'arn' ? (
-            <div>
             <FormControl label="ARN">
               <Input value={form.arn} onChange={(e) => setForm({ ...form, arn: e.currentTarget.value })} placeholder="arn:aws:ec2:eu-west-1:123456789012:vpc/vpc-0abc" />
             </FormControl>
-            </div>
           ) : (
-            <div>
-            <FormControl label="Account ID">
-              <Input value={form.account_id} onChange={(e) => setForm({ ...form, account_id: e.currentTarget.value })} placeholder="123456789012" />
+            <FormControl label={t('Account ID', '账号 ID')} caption={t('12 digits', '12 位数字')}>
+              <Input value={form.account_id} onChange={(e) => setForm({ ...form, account_id: e.currentTarget.value })} />
             </FormControl>
-            </div>
           )}
           {level === 'region' || level === 'type' ? (
-            <div>
             <FormControl
-              label="Region"
-              caption={level === 'type' ? 'Leave empty to scan every region the account has enabled' : undefined}
+              label={t('Region', '区域')}
+              caption={level === 'type' ? t('Leave empty to scan every region the account uses', '留空则扫描该账号启用的所有区域') : undefined}
             >
               <Select
                 options={regions.map((r) => ({ id: r, label: r }))}
-                value={pick(form.region)}
-                placeholder={level === 'type' ? 'All enabled regions' : 'Select a region'}
+                value={regionValue}
+                placeholder={level === 'type' ? t('All enabled regions', '所有启用的区域') : t('Select a region', '选择区域')}
                 onChange={({ value }) => setForm({ ...form, region: String(value[0]?.id ?? '') })}
               />
             </FormControl>
-            </div>
           ) : null}
           {level === 'type' ? (
-            <div>
-            <FormControl label="Resource type">
+            <FormControl label={t('Resource type', '资源类型')}>
               <Select
                 options={typeOptions}
-                value={pick(form.resource_type)}
-                placeholder="Select a type"
+                value={typeValue}
+                placeholder={t('Select a type', '选择类型')}
                 onChange={({ value }) => setForm({ ...form, resource_type: String(value[0]?.id ?? '') })}
               />
             </FormControl>
-            </div>
           ) : null}
         </div>
         <ErrorNotice error={error} />
       </ModalBody>
       <ModalFooter>
         <ModalButton kind={KIND.tertiary} onClick={onClose}>
-          Cancel
+          {t('Cancel', '取消')}
         </ModalButton>
         <ModalButton disabled={Boolean(missing)} isLoading={busy} onClick={() => void submit()}>
-          {missing ? `${missing} is required` : 'Start scan'}
+          {missing ? t(`Enter the ${missing.toLowerCase()}`, `请填写${missing}`) : t('Start scan', '开始扫描')}
         </ModalButton>
       </ModalFooter>
     </Modal>

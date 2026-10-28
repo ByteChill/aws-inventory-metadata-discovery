@@ -126,7 +126,7 @@ def test_scan_records_who_requested_it(secured: TestClient) -> None:
         json=load_fixture("api/scan.account_region.request.json"),
         headers=bearer("operator"),
     )
-    job = secured.get(f"/v1/scans/{response.json()['job_id']}", headers=bearer("viewer")).json()
+    job = secured.get(f"/v1/scans/{response.json()['job_id']}", headers=bearer("admin")).json()
 
     assert response.json()["requested_by"] == "10000002"
     assert job["requested_by"] == "10000002"

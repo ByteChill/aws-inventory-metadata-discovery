@@ -1,6 +1,79 @@
 {
   "components": {
     "schemas": {
+      "Account": {
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "account_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Type"
+          },
+          "eim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eim"
+          },
+          "listed_at": {
+            "format": "date-time",
+            "title": "Listed At",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "status",
+          "listed_at"
+        ],
+        "title": "Account",
+        "type": "object"
+      },
+      "AccountsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AccountsResponse",
+        "type": "object"
+      },
       "ApiKeyCreate": {
         "additionalProperties": false,
         "properties": {
@@ -156,6 +229,16 @@
       },
       "CoverageResponse": {
         "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Account"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "account_id": {
             "title": "Account Id",
             "type": "string"
@@ -548,6 +631,28 @@
             "title": "Account Id",
             "type": "string"
           },
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Name"
+          },
+          "account_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Type"
+          },
           "arn": {
             "title": "Arn",
             "type": "string"
@@ -575,6 +680,17 @@
               }
             ],
             "title": "Deleted At"
+          },
+          "eim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eim"
           },
           "first_seen_at": {
             "format": "date-time",
@@ -1036,6 +1152,26 @@
             ],
             "title": "Account Ids"
           },
+          "account_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "dev",
+                    "preprod",
+                    "prod"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Types"
+          },
           "changed_since": {
             "anyOf": [
               {
@@ -1070,6 +1206,21 @@
               }
             ],
             "title": "Data Jsonpath"
+          },
+          "eims": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eims"
           },
           "include_deleted": {
             "default": false,
@@ -1275,6 +1426,36 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/accounts": {
+      "get": {
+        "description": "Every account account-directory has listed (a few thousand at most: not paged).",
+        "operationId": "accounts_v1_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Accounts",
+        "tags": [
+          "resources"
+        ]
+      }
+    },
     "/v1/accounts/{account_id}/coverage": {
       "get": {
         "operationId": "coverage_v1_accounts__account_id__coverage_get",
@@ -1565,6 +1746,49 @@
           },
           {
             "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
+            }
+          },
+          {
+            "in": "query",
             "name": "tag",
             "required": false,
             "schema": {
@@ -1746,6 +1970,49 @@
       "get": {
         "operationId": "list_all_v1_resources_all_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
+            }
+          },
           {
             "in": "query",
             "name": "tag",
@@ -2166,6 +2433,49 @@
           },
           {
             "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
+            }
+          },
+          {
+            "in": "query",
             "name": "include_deleted",
             "required": false,
             "schema": {
@@ -2222,6 +2532,49 @@
             "schema": {
               "title": "Account Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
             }
           },
           {
@@ -2423,6 +2776,49 @@
             "schema": {
               "title": "Region",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
             }
           },
           {
@@ -2711,6 +3107,49 @@
             "schema": {
               "title": "Resource Type",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "eim",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Eim"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "dev",
+                      "preprod",
+                      "prod"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account Type"
             }
           },
           {

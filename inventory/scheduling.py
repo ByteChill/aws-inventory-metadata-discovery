@@ -19,6 +19,7 @@ from inventory.config import GLOBAL_REGION, US_EAST_1, CommonSettings
 from inventory.db import AccountRegionRepository, JobRepository
 from inventory.errors import BadRequestError, UpstreamError
 from inventory.models import (
+    DirectoryAccount,
     NewTask,
     QueueKind,
     ScanJob,
@@ -187,7 +188,7 @@ class AccountDirectoryClient:
         self._function_name = function_name
         self._region = region
 
-    def list_accounts(self) -> list[str]:
+    def list_accounts(self) -> list[DirectoryAccount]:
         client = self._clients.client("lambda", self._region)
         try:
             response = client.invoke(
@@ -205,14 +206,24 @@ class AccountDirectoryClient:
         return parse_account_directory(body)
 
 
-def parse_account_directory(body: dict[str, Any]) -> list[str]:
+def parse_account_directory(body: dict[str, Any]) -> list[DirectoryAccount]:
+    """Every listed account, sorted by ID; only ``ACTIVE`` ones are scanned (the caller's call).
+
+    Response: ``{"accounts": [{"account_id", "name", "eim", "type", "status"}]}``; empty
+    strings mean "not set".
+    """
     accounts = body.get("accounts")
     if not isinstance(accounts, list):
         raise UpstreamError("account directory response has no 'accounts' list", retryable=False)
-    return sorted(
-        {
-            str(a["account_id"])
-            for a in accounts
-            if isinstance(a, dict) and a.get("account_id") and a.get("status", "ACTIVE") == "ACTIVE"
-        }
-    )
+    parsed = {
+        str(a["account_id"]): DirectoryAccount(
+            account_id=str(a["account_id"]),
+            name=a.get("name") or None,
+            eim=a.get("eim") or None,
+            account_type=a.get("type") or None,
+            status=str(a.get("status") or "ACTIVE"),
+        )
+        for a in accounts
+        if isinstance(a, dict) and a.get("account_id")
+    }
+    return [parsed[k] for k in sorted(parsed)]

@@ -1,4 +1,5 @@
 import type {
+  Account,
   ApiKey,
   ApiKeyCreated,
   Coverage,
@@ -82,9 +83,11 @@ async function request<T>(method: string, path: string, opts: { query?: Query; b
 }
 
 export interface ResourceFilters {
-  account_id?: string;
-  region?: string;
-  resource_type?: string;
+  account_id?: string[];
+  region?: string[];
+  resource_type?: string[];
+  eim?: string[];
+  account_type?: string[];
   name_prefix?: string;
   tag?: string;
   include_deleted?: boolean;
@@ -101,6 +104,7 @@ export const api = {
     request<Resource>('GET', '/v1/resources/by-arn', { query: { arn, include_deleted: true } }),
   stats: (groupBy: string, query: Query = {}) =>
     request<StatsResponse>('GET', '/v1/resources/stats', { query: { group_by: groupBy, ...query } }),
+  accounts: () => request<{ items: Account[] }>('GET', '/v1/accounts'),
   resourceTypes: () => request<{ items: ResourceType[] }>('GET', '/v1/resource-types'),
   coverage: (accountId: string) =>
     request<Coverage>('GET', `/v1/accounts/${encodeURIComponent(accountId)}/coverage`),

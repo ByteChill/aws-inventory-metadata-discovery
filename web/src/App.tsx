@@ -20,8 +20,8 @@ export function App({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: () 
       <Routes>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/resources" element={<ResourcesPage />} />
-        <Route path="/scans" element={<ScansPage />} />
-        <Route path="/scans/:jobId" element={<JobPage />} />
+        {can('scans:write') ? <Route path="/scans" element={<ScansPage />} /> : null}
+        {can('scans:write') ? <Route path="/scans/:jobId" element={<JobPage />} /> : null}
         <Route path="/accounts/:accountId" element={<CoveragePage />} />
         {can('api_keys:manage') && state.me.auth_mode === 'enforced' ? <Route path="/api-keys" element={<ApiKeysPage />} /> : null}
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -54,7 +54,7 @@ def test_missing_ambiguous_or_malformed_credentials(bearer: str | None, key: str
 
 def test_roles_are_cumulative() -> None:
     assert ROLE_PERMISSIONS["viewer"] < ROLE_PERMISSIONS["operator"] < ROLE_PERMISSIONS["admin"]
-    assert "scans:write" not in ROLE_PERMISSIONS["viewer"]
+    assert ROLE_PERMISSIONS["viewer"] == {"resources:read"}
     assert "api_keys:manage" in ROLE_PERMISSIONS["admin"]
 
 

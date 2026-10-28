@@ -14,13 +14,13 @@
 
 | 角色 | 权限 |
 |---|---|
-| `viewer` | `resources:read`、`scans:read` |
-| `operator` | `viewer` 的全部权限，加上 `scans:write`（触发扫描、刷新资源） |
+| `viewer` | `resources:read` |
+| `operator` | `viewer` 的全部权限，加上 `scans:read`（扫描记录）、`scans:write`（触发扫描、刷新资源） |
 | `admin` | `operator` 的全部权限，加上 `api_keys:manage` |
 
 | 接口 | 需要的权限 |
 |---|---|
-| `GET /v1/resources*`、`POST /v1/resources/search`、`GET /v1/resource-types`、`GET /v1/accounts/{id}/coverage` | `resources:read` |
+| `GET /v1/resources*`、`POST /v1/resources/search`、`GET /v1/resource-types`、`GET /v1/accounts`、`GET /v1/accounts/{id}/coverage`、`/v1/history/*`（预留） | `resources:read` |
 | `GET /v1/scans*` | `scans:read` |
 | `POST /v1/scans`、`POST /v1/resources/refresh` | `scans:write` |
 | `GET/POST/DELETE /v1/api-keys*` | `api_keys:manage` |
@@ -115,14 +115,24 @@ ALTER TABLE scan_job ADD COLUMN requested_by text;   -- 触发者（principal.su
 
 页面：
 
-| 路由 | 内容 | 权限 |
+面向使用者，而不是开发者：普通用户（viewer）只关心资源的现状；扫描相关的内容只给能发起扫描的人（`scans:write`，即 operator / admin）。
+
+| 路由 | 内容 | 谁能看到 |
 |---|---|---|
-| `#/` 看板 | 资源总数、账号数、类型数、近期 job 成功率；按类型、按 region 的数量条形图；最近的扫描 job | `resources:read`、`scans:read` |
-| `#/resources` | 过滤（账号、region、类型、名称前缀、tag、含已删除）、表格、"加载更多"、详情抽屉（字段、tags、`data` JSON），"从 AWS 刷新" | 读：`resources:read`；刷新：`scans:write` |
-| `#/scans` | 扫描 job 列表（状态、触发方式、账号过滤），"新建扫描"弹窗（账号 / 账号 + region / 账号 + 类型 / ARN） | 读：`scans:read`；新建：`scans:write` |
-| `#/scans/:jobId` | job 进度、统计、task 表（含错误）、按相同 scope 重新扫描；非终态时每 2 秒刷新 | 同上 |
-| `#/accounts/:accountId` | 账号覆盖情况：region × 类型的状态、数量、最近成功时间、错误；每行"扫描" | 读：`resources:read`；扫描：`scans:write` |
-| `#/api-keys` | 列表、创建（名称、角色、过期时间；明文只显示一次）、撤销 | `api_keys:manage` |
+| `#/` 概览 | EIM 数、账号数、资源类型数、资源总数、数据更新时间（最近一次完成的定时全量扫描）；"资源分布"图：一个横向条形图，用按钮切换维度（EIM / 账号 / 账号类型 / 资源类型 / 区域），显示前 10 项，其余合并为"其他"；每根条按账号类型（dev / preprod / prod / 不在目录中）分段着色，颜色固定跟随账号类型，图例带各类型合计，悬停显示数量与占比，点击条或分段即筛选资源。账号显示为"名称（ID）"；最近变化的资源。扫描管理者另有"扫描"区：需要关注的扫描数、进行中的数量、最近的扫描 | 所有人；"扫描"区与"发起扫描"仅 `scans:write` |
+| `#/resources` | EIM、账号、账号类型、资源类型、区域筛选与名称搜索（可勾选多个值，URL 中重复参数）即时生效；表格列与筛选顺序一致：EIM、账号、账号类型、资源类型、区域、名称与 ARN、最近变化；分页为上一页 / 下一页（keyset cursor，没有跳页），每页 20 / 50 / 100 条（记在 `localStorage`），显示"第 x–y 条，共 n 条"，标签 / 含已删除放在"更多筛选"；表格（手机上为卡片）；详情抽屉：按类型的关键属性、标签、记录（首次发现 / 最近变化 / 最近确认），ARN、ID 与原始数据收在"技术详情"；`?arn=` 直接打开详情 | 所有人；"从 AWS 重新获取""扫描此类资源"仅 `scans:write` |
+| `#/scans`、`#/scans/:jobId` | 扫描列表（扫描 ID、范围层级标签：全部账号 / 账号 / 区域 / 类型 / 资源、状态、结果"新增 / 更新 / 删除"、发起人），按状态 / 来源 / 账号筛选，`?status=` 可直接筛选；详情页：扫描 ID，"范围"面板列出层级与具体的账号、区域、类型或资源 ARN；进度、计数、各区域与类型的结果，错误码翻译成说明，request_id、原始错误收在"技术详情" | 仅 `scans:write`（导航中也不显示） |
+| `#/accounts/:accountId` | 账号概况与"类型 × 区域"矩阵，格子里是资源数，点击查看资源。扫描管理者另有：按扫描状态着色、"需要关注"计数、点击格子弹出状态 / 最近成功时间 / 问题与"立即扫描"，以及"扫描整个账号" | 所有人；扫描状态与操作仅 `scans:write` |
+| `#/api-keys` | 列表、创建（名称、角色、过期时间；明文只显示一次）、撤销 | `api_keys:manage`，且认证为 `enforced` |
+
+显示规则：
+
+- **中英双语**：用户菜单与登录页可切换，默认跟随浏览器语言，保存在 `localStorage`。文案写在使用处（`t('English', '中文')`），不建 key 目录。
+- 资源类型显示为常用名称并带服务色标（如"EC2 实例""S3 存储桶"）；区域保留代码（`ap-east-1`）。
+- 状态与错误码显示为说明文字（`src/i18n/labels.ts`），原始值在"技术详情"中。
+- 时间显示为本地时区的 `YYYY-MM-DD HH:mm`，不用"昨天""3 小时前"这类相对时间；悬停显示原始 UTC 值。
+- 资源的 ARN 直接显示（列表中在名称下方，详情中在标题下方），可一键复制；列表中的账号、区域点击即按其筛选。
+- viewer 没有 `scans:read`，概览不显示"数据更新时间"（它来自定时扫描记录）。
 
 - 认证：`AuthProvider` 提供 `getToken()`。v1 的 token 来自 `sessionStorage`，由"粘贴 token"的开发入口写入；接入 SSO 时只替换 token 的获取方式。每个请求带 `Authorization: Bearer`；收到 401 时转到登录页。
 - 启动时调用 `/v1/me`，按 `permissions` 隐藏或禁用没有权限的操作（服务端仍然校验）。

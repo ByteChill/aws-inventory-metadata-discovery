@@ -209,8 +209,12 @@ async def _result(state: ApiState, result: ArnResult) -> RefreshResult:
     return RefreshResult(arn=result.arn, status=result.status, resource=resource, error=error)
 
 
+# change history is resource data, not scan records
 @router.api_route(
-    "/history/{path:path}", methods=["GET", "POST"], include_in_schema=False, dependencies=[Reader]
+    "/history/{path:path}",
+    methods=["GET", "POST"],
+    include_in_schema=False,
+    dependencies=[Depends(require("resources:read"))],
 )
 async def history(path: str) -> dict[str, Any]:
     raise NotImplementedFeatureError("change history is not implemented yet (spec 09)")

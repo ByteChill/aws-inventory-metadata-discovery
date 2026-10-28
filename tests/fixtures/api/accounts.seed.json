@@ -1,0 +1,4 @@
+[
+  {"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE"},
+  {"account_id": "210987654321", "name": null, "eim": "20150011", "account_type": "prod", "status": "ACTIVE"}
+]

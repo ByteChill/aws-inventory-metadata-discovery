@@ -156,6 +156,20 @@ def utcnow() -> datetime:
 # --------------------------------------------------------------------------- resources
 
 
+AccountType = Literal["dev", "preprod", "prod"]
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryAccount:
+    """An account as account-directory lists it; ``eim`` is the virtual owner of accounts."""
+
+    account_id: str
+    name: str | None
+    eim: str | None
+    account_type: str | None
+    status: str
+
+
 @dataclass(frozen=True, slots=True)
 class ResourceKey:
     resource_type: str

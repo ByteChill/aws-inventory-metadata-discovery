@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 Permission = Literal["resources:read", "scans:read", "scans:write", "api_keys:manage"]
 Role = Literal["viewer", "operator", "admin"]
 
-_VIEWER: frozenset[Permission] = frozenset({"resources:read", "scans:read"})
-_OPERATOR: frozenset[Permission] = _VIEWER | {"scans:write"}
+_VIEWER: frozenset[Permission] = frozenset({"resources:read"})
+_OPERATOR: frozenset[Permission] = _VIEWER | {"scans:read", "scans:write"}
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
     "viewer": _VIEWER,
     "operator": _OPERATOR,

@@ -84,7 +84,7 @@
 
 1. EventBridge Scheduler 每 4 小时启动 Step Functions `scan-run`。
 2. `create_job`：写入 `scan_job(trigger=schedule)`。若是 UTC 当天第一轮，设置 `full_refresh=true`（部分 collector 用它做每日全量兜底）。
-3. `list_targets`：调用 account-directory 拿账号列表；调用 broker `list_accessible_accounts` 取交集。无权限账号直接记 `scan_task(status=auth_denied)`。
+3. `list_targets`：调用 account-directory 拿账号列表（含名称、EIM、账号类型，写入 `account` 表）；调用 broker `list_accessible_accounts` 取交集。无权限账号直接记 `scan_task(status=auth_denied)`。
 4. Distributed Map 按批（每批 50 个账号）调用 `dispatch_batch`：对每个账号确定启用的 region（`account_region` 表缓存 24h，过期则用 `ec2:DescribeRegions` 刷新），与受支持 region 取交集，为每个 `(account, region)` 和 `(account, global)` 创建 `scan_task` 并投递到对应 region 的 `scheduled` 队列（global 投到 home region `us-east-1`）。
 5. worker 消费消息，按 collector 依赖分组执行扫描、对账、写库，更新 `scan_task` 和 `scope_state`。
 6. `check_progress` 每 5 分钟检查一次，全部 task 到达终态或超过 deadline（3.5h）后进入 `finalize`：超时 task 标记 `timed_out`，汇总 job 状态与统计。
@@ -210,7 +210,6 @@ v1：`Reconciler` 计算出 `ChangeEvent`，在写库的同一事务中交给 `C
 | 经 peering 用 endpoint-specific DNS 访问对端 region 的 SQS / Lambda / ec2 等 endpoint | M3 前做 PoC |
 | us-east-1 是否有 IAM / Route 53 interface endpoint | 控制台确认，没有则对应 collector 自动跳过 |
 | ADFS 登录流程是否为标准表单 | 先按标准实现，接入真实环境时调整 `AdfsClient` |
-| account-directory λ 的实际请求/响应格式 | 接入前确认，先按 [specs/05-planner.md](specs/05-planner.md) 的假设实现适配器 |
 | ECS DescribeServices / IAM API 限流在大账号上的表现 | M5 后用真实账号压测 |
 
 ## 14. 文档索引

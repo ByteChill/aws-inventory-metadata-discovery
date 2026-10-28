@@ -110,6 +110,22 @@ CREATE TABLE account_region (
 );
 ```
 
+### 2.3.1 `account`（迁移 0006）
+
+account-directory 列出的账号，由 planner 在 `list_targets` 时写入（`AccountRepository.upsert`）。账号从目录中消失时**保留**该行（只是不再扫描），它的资源仍能按 EIM 查到。EIM 是账号的虚拟归属（8 位字符串），资源通过 `account_id` 关联到 EIM，`resource` 表不冗余存 EIM。
+
+```sql
+CREATE TABLE account (
+  account_id   char(12)    PRIMARY KEY,
+  name         text,                    -- 目录中为空字符串时存 NULL
+  eim          text,
+  account_type text,                    -- dev | preprod | prod（目录中的 type）
+  status       text        NOT NULL,    -- ACTIVE 才扫描
+  listed_at    timestamptz NOT NULL     -- 最近一次出现在目录中的时间
+);
+CREATE INDEX ix_account_eim ON account (eim);
+```
+
 ### 2.4 `scan_job`
 
 ```sql

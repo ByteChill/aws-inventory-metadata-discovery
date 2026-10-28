@@ -178,13 +178,12 @@ WaitLoop: Wait 300s → CheckProgress ──done?──► Finalize ──► Do
 
 ```python
 class AccountDirectoryClient:
-    def list_accounts(self) -> list[str]: ...
+    def list_accounts(self) -> list[DirectoryAccount]: ...
 ```
 
-⚠️ account-directory λ 的实际请求/响应格式**待确认**。先按以下假设实现，接入时只改这个类与对应 fixture：
-
 - 请求：`{}`（fixture：`planner/account_directory.request.json`）
-- 响应：`{"accounts": [{"account_id": "123456789012", "status": "ACTIVE"}]}`，只取 `status == "ACTIVE"` 的账号（fixture：`planner/account_directory.response.json`）
+- 响应：`{"accounts": [{"account_id": "123456789012", "name": "", "eim": "20142209", "type": "dev", "status": "ACTIVE"}]}`（fixture：`planner/account_directory.response.json`）。`type` 为 `dev | preprod | prod`，在本系统中叫 `account_type`；空字符串视为未设置。
+- `list_targets` 把列出的全部账号写入 `account` 表（spec 02 §2.3.1），只扫描 `status == "ACTIVE"` 的账号。目录中不再出现的账号保留原记录，只是不扫描。
 
 ## 7. 配置（`PlannerSettings`，前缀 `PLANNER_`）
 

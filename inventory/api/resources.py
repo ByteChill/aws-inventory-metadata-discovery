@@ -15,6 +15,8 @@ from inventory.api.auth import require
 from inventory.api.errors import ValidationFailedError
 from inventory.api.queries import GROUPABLE, PageRequest, ResourceFilters, ResourceQueries
 from inventory.api.schemas import (
+    Account,
+    AccountsResponse,
     CoverageResponse,
     CoverageScope,
     Page,
@@ -30,6 +32,7 @@ from inventory.api.schemas import (
 from inventory.api.state import ApiState, get_state
 from inventory.config import GLOBAL_REGION
 from inventory.errors import NotFoundError
+from inventory.models import AccountType
 
 router = APIRouter(
     prefix="/v1", tags=["resources"], dependencies=[Depends(require("resources:read"))]
@@ -69,6 +72,8 @@ async def _page(
 class ListOptions:
     """Query parameters shared by /v1/resources and its path forms (everything but the scope)."""
 
+    eims: tuple[str, ...]
+    account_types: tuple[str, ...]
     tags: dict[str, str]
     tag_keys: tuple[str, ...]
     name_prefix: str | None
@@ -83,6 +88,8 @@ class ListOptions:
             account_ids=tuple(account_ids),
             regions=tuple(regions),
             resource_types=tuple(resource_types),
+            eims=self.eims,
+            account_types=self.account_types,
             tags=self.tags,
             tag_keys=self.tag_keys,
             name_prefix=self.name_prefix,
@@ -92,6 +99,8 @@ class ListOptions:
 
 
 def list_options(
+    eim: Annotated[list[str] | None, Query()] = None,
+    account_type: Annotated[list[AccountType] | None, Query()] = None,
     tag: Annotated[list[str] | None, Query()] = None,
     name_prefix: str | None = None,
     changed_since: datetime | None = None,
@@ -105,7 +114,16 @@ def list_options(
 ) -> ListOptions:
     tags, tag_keys = parse_tags(tag or [])
     page = PageRequest(sort, order, limit, cursor, with_total, full=view == "full")
-    return ListOptions(tags, tag_keys, name_prefix, changed_since, include_deleted, page)
+    return ListOptions(
+        tuple(eim or ()),
+        tuple(account_type or ()),
+        tags,
+        tag_keys,
+        name_prefix,
+        changed_since,
+        include_deleted,
+        page,
+    )
 
 
 Options = Annotated[ListOptions, Depends(list_options)]
@@ -129,6 +147,8 @@ async def search_resources(state: State, body: SearchRequest) -> Page[Resource]:
         account_ids=tuple(body.account_ids or ()),
         regions=tuple(body.regions or ()),
         resource_types=tuple(body.resource_types or ()),
+        eims=tuple(body.eims or ()),
+        account_types=tuple(body.account_types or ()),
         tags=body.tags or {},
         tag_keys=tuple(body.tag_keys or ()),
         name_prefix=body.name_prefix,
@@ -170,6 +190,8 @@ async def resource_stats(
     account_id: Annotated[list[str] | None, Query()] = None,
     region: Annotated[list[str] | None, Query()] = None,
     resource_type: Annotated[list[str] | None, Query()] = None,
+    eim: Annotated[list[str] | None, Query()] = None,
+    account_type: Annotated[list[AccountType] | None, Query()] = None,
     include_deleted: bool = False,
 ) -> StatsResponse:
     groups = [g.strip() for g in group_by.split(",") if g.strip()]
@@ -180,15 +202,25 @@ async def resource_stats(
         account_ids=tuple(account_id or ()),
         regions=tuple(region or ()),
         resource_types=tuple(resource_type or ()),
+        eims=tuple(eim or ()),
+        account_types=tuple(account_type or ()),
         include_deleted=include_deleted,
     )
     result, total = await state.queries.stats(groups, filters)
     return StatsResponse(groups=result, total=total)
 
 
+@router.get("/accounts", response_model=AccountsResponse)
+async def accounts(state: State) -> AccountsResponse:
+    """Every account account-directory has listed (a few thousand at most: not paged)."""
+    rows = await state.queries.accounts()
+    return AccountsResponse(items=[Account.model_validate(dict(r)) for r in rows])
+
+
 @router.get("/accounts/{account_id}/coverage", response_model=CoverageResponse)
 async def coverage(state: State, account_id: str) -> CoverageResponse:
     regions, scopes = await state.queries.coverage(account_id)
+    known = await state.queries.account(account_id)
     enabled = sorted(r["region"] for r in regions if r["enabled"])
     seen = {(s["region"], s["resource_type"]) for s in scopes}
     items = [
@@ -206,7 +238,11 @@ async def coverage(state: State, account_id: str) -> CoverageResponse:
     items.sort(key=lambda s: (s.region, s.resource_type))
     checked = min((r["checked_at"] for r in regions), default=None)
     return CoverageResponse(
-        account_id=account_id, enabled_regions=enabled, regions_checked_at=checked, scopes=items
+        account_id=account_id,
+        account=Account.model_validate(dict(known)) if known else None,
+        enabled_regions=enabled,
+        regions_checked_at=checked,
+        scopes=items,
     )
 
 

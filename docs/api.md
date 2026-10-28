@@ -77,8 +77,8 @@
 
 | 角色 | 权限 |
 |---|---|
-| `viewer` | 读资源、统计、覆盖情况、扫描 job（`resources:read`、`scans:read`） |
-| `operator` | viewer + 触发扫描与刷新（`scans:write`） |
+| `viewer` | 读资源、统计、覆盖情况（`resources:read`） |
+| `operator` | viewer + 读扫描 job（`scans:read`）、触发扫描与刷新（`scans:write`） |
 | `admin` | operator + 管理 API key（`api_keys:manage`） |
 
 没有凭证或凭证无效返回 401 `UNAUTHENTICATED`（响应头 `WWW-Authenticate: Bearer`）；权限不足返回 403 `FORBIDDEN`。`/healthz`、`/readyz`、`/ui/`、`/docs`、`/openapi.json` 不需要认证。每个接口需要的权限见 [spec 10 §1](specs/10-web-ui-and-auth.md)。
@@ -102,7 +102,10 @@
   "last_changed_at": "2026-10-27T04:03:44Z",
   "observed_at": "2026-10-27T04:03:44Z",
   "deleted_at": null,
-  "verified_at": "2026-10-27T08:02:10Z"
+  "verified_at": "2026-10-27T08:02:10Z",
+  "account_name": "payments-dev",
+  "eim": "20142209",
+  "account_type": "dev"
 }
 ```
 
@@ -114,6 +117,7 @@
 | `last_changed_at` | 内容最后一次变化的时间 |
 | `verified_at` | 所属 scope 最后一次成功完整扫描的时间（来自 `scope_state`），表示数据至少在该时刻是准确的。可能早于 `observed_at`（单 ARN 刷新只更新 `observed_at`） |
 | `deleted_at` | 非空表示资源在 AWS 已不存在（软删除，默认保留 180 天，可配置） |
+| `account_name` / `eim` / `account_type` | 所属账号在 account-directory 中的名称、EIM（账号的虚拟归属）与类型（`dev`/`preprod`/`prod`），见 §3.15。账号不在目录中时为 `null` |
 
 ### 2.2 ScanScope
 
@@ -193,6 +197,8 @@
 | `account_id` | string，可重复 | |
 | `region` | string，可重复 | 包括 `global` |
 | `resource_type` | string，可重复 | |
+| `eim` | string，可重复 | 所属账号的 EIM |
+| `account_type` | `dev` \| `preprod` \| `prod`，可重复 | 所属账号的类型 |
 | `tag` | string，可重复 | `Key=Value` 精确匹配（在第一个 `=` 处分割）；只写 `Key` 表示存在该 tag。key 含 `=` 时请用 `POST /v1/resources/search` |
 | `name_prefix` | string | |
 | `changed_since` | datetime | `last_changed_at >= changed_since` |
@@ -206,7 +212,7 @@
 
 #### 路径形式
 
-按 scope 层级获取资源，路径中的段等价于对应的单值过滤条件；其余参数（`tag`、`name_prefix`、`changed_since`、`include_deleted`、`view`、`sort`、`order`、`limit`、`cursor`、`with_total`）与上表相同。
+按 scope 层级获取资源，路径中的段等价于对应的单值过滤条件；其余参数（`eim`、`account_type`、`tag`、`name_prefix`、`changed_since`、`include_deleted`、`view`、`sort`、`order`、`limit`、`cursor`、`with_total`）与上表相同。
 
 | 路径 | 等价于 | 响应 |
 |---|---|---|
@@ -229,6 +235,8 @@ GET 接口的完整版，过滤条件放在 body 中：
   "account_ids": ["123456789012"],
   "regions": ["eu-west-1"],
   "resource_types": ["AWS::EC2::Instance"],
+  "eims": ["20142209"],
+  "account_types": ["prod"],
   "tags": {"Env": "prod"},
   "tag_keys": ["Owner"],
   "name_prefix": "web-",
@@ -261,8 +269,8 @@ GET 接口的完整版，过滤条件放在 body 中：
 
 | 参数 | 说明 |
 |---|---|
-| `group_by` | 逗号分隔，取值 `account_id`、`region`、`resource_type` 的任意组合；默认 `resource_type` |
-| `account_id` / `region` / `resource_type` | 可重复，过滤 |
+| `group_by` | 逗号分隔，取值 `account_id`、`region`、`resource_type`、`eim`、`account_type` 的任意组合；默认 `resource_type`。不在账号目录中的账号，`eim` / `account_type` 分组为 `null` |
+| `account_id` / `region` / `resource_type` / `eim` / `account_type` | 可重复，过滤 |
 | `include_deleted` | 默认 false |
 
 ```json
@@ -275,7 +283,7 @@ GET 接口的完整版，过滤条件放在 body 中：
 }
 ```
 
-不带 tag/name 等过滤时直接读 `scope_state` 预聚合结果；否则走 `COUNT`。
+不带 tag/name 等过滤时直接读 `scope_state` 预聚合结果（EIM / 账号类型过滤与分组同样适用）；否则走 `COUNT`。
 
 ### 3.5 `POST /v1/resources/refresh` 刷新资源
 
@@ -349,6 +357,7 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 ```json
 {
   "account_id": "123456789012",
+  "account": {"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE", "listed_at": "2026-10-27T00:00:12Z"},
   "enabled_regions": ["ap-east-1", "eu-west-1"],
   "regions_checked_at": "2026-10-27T00:01:00Z",
   "scopes": [
@@ -366,7 +375,7 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 }
 ```
 
-`scopes[].status`：`succeeded | failed | auth_denied | never`。
+`scopes[].status`：`succeeded | failed | auth_denied | never`。`account` 为 §3.15 的 Account，账号不在目录中时为 `null`。
 
 ### 3.10 `GET /v1/resource-types` 已注册的资源类型
 
@@ -421,3 +430,19 @@ ARN 中不含账号或 region 的资源（AMI、S3 bucket、Route 53 hosted zone
 ### 3.14 预留
 
 `/v1/history/*` 当前返回 501 `NOT_IMPLEMENTED`。设计见 [specs/09-reserved-extensions.md](specs/09-reserved-extensions.md)。
+
+### 3.15 `GET /v1/accounts` 账号目录
+
+account-directory 列出过的全部账号（数千个以内，不分页），按 `account_id` 排序。账号从目录中消失后仍保留（只是不再扫描）。
+
+```json
+{"items": [{"account_id": "123456789012", "name": "payments-dev", "eim": "20142209", "account_type": "dev", "status": "ACTIVE", "listed_at": "2026-10-27T00:00:12Z"}]}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 目录中的名称，可能为 `null` |
+| `eim` | 账号的虚拟归属（8 位字符串）；资源经账号归属到 EIM |
+| `account_type` | `dev` / `preprod` / `prod`（目录中的 `type`） |
+| `status` | 目录中的状态，只扫描 `ACTIVE` |
+| `listed_at` | 最近一次出现在目录中的时间 |

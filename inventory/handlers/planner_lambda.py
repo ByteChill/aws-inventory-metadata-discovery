@@ -15,7 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from inventory.bootstrap import Runtime, build_runtime
 from inventory.config import PlannerSettings, get_common_settings, get_planner_settings
-from inventory.db import ACTIVE_JOB_STATUSES, JobRepository, ResourceRepository, scan_job
+from inventory.db import (
+    ACTIVE_JOB_STATUSES,
+    AccountRepository,
+    JobRepository,
+    ResourceRepository,
+    scan_job,
+)
 from inventory.engine import classify
 from inventory.errors import NotFoundError
 from inventory.models import NewTask, ScanJob, ScanScope, TaskStatus, utcnow
@@ -95,6 +101,7 @@ class Planner:
         self.directory = directory
         self.clock = clock
         self.jobs = JobRepository()
+        self.accounts = AccountRepository()
 
     def handle(self, event: dict[str, Any], remaining_ms: Callable[[], int]) -> dict[str, Any]:
         parsed = EVENT_ADAPTER.validate_python(event)
@@ -144,7 +151,10 @@ class Planner:
         return {"skipped": False, "job_id": job.job_id, "full_refresh": full_refresh}
 
     def list_targets(self, job_id: str) -> dict[str, Any]:
-        directory = set(self.directory.list_accounts())
+        listed = self.directory.list_accounts()
+        with self.rt.db.begin() as conn:
+            self.accounts.upsert(conn, listed, self.clock())
+        directory = {a.account_id for a in listed if a.status == "ACTIVE"}
         accessible = self.rt.credentials.accessible_accounts()
         denied = sorted(directory - accessible)
         if denied:

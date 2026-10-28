@@ -17,11 +17,12 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from inventory.db import account_region, resource, scan_job, scan_task, scope_state
+from inventory.db import account, account_region, resource, scan_job, scan_task, scope_state
 from inventory.errors import BadRequestError, InventoryError
 from inventory.models import TERMINAL_TASK_STATUSES
 
-GROUPABLE = ("account_id", "region", "resource_type")
+GROUPABLE = ("account_id", "region", "resource_type", "eim", "account_type")
+ACCOUNT_FIELDS = ("eim", "account_type")  # from the account table, joined on account_id
 
 
 class QueryTimeoutError(InventoryError):
@@ -39,6 +40,8 @@ class ResourceFilters:
     account_ids: tuple[str, ...] = ()
     regions: tuple[str, ...] = ()
     resource_types: tuple[str, ...] = ()
+    eims: tuple[str, ...] = ()
+    account_types: tuple[str, ...] = ()
     tags: dict[str, str] = field(default_factory=dict)
     tag_keys: tuple[str, ...] = ()
     name_prefix: str | None = None
@@ -50,9 +53,18 @@ class ResourceFilters:
         payload = json.dumps(asdict(self), sort_keys=True, default=str)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
+    def account_clauses(self, account_id: Any) -> list[ColumnElement[bool]]:
+        """EIM / account type filters, as a subquery on the (small) account table."""
+        where: list[ColumnElement[bool]] = []
+        for column, values in (("eim", self.eims), ("account_type", self.account_types)):
+            if values:
+                accounts = select(account.c.account_id).where(account.c[column].in_(values))
+                where.append(account_id.in_(accounts))
+        return where
+
     @property
     def is_scope_only(self) -> bool:
-        """Only account/region/type filters: counts can come from scope_state."""
+        """Only account/region/type/EIM filters: counts can come from scope_state."""
         return not (
             self.tags
             or self.tag_keys
@@ -71,6 +83,7 @@ class ResourceFilters:
             where.append(c.region.in_(self.regions))
         if self.resource_types:
             where.append(c.resource_type.in_(self.resource_types))
+        where.extend(self.account_clauses(c.account_id))
         if self.tags:
             where.append(c.tags.contains(self.tags))
         for key in self.tag_keys:
@@ -153,7 +166,13 @@ def _resource_columns(full: bool) -> list[Any]:
     columns = [c for c in resource.c if c.name not in ("data", "content_hash", "last_job_id")]
     if full:
         columns.append(resource.c.data)
-    return [*columns, scope_state.c.last_success_at.label("verified_at")]
+    return [
+        *columns,
+        scope_state.c.last_success_at.label("verified_at"),
+        account.c.name.label("account_name"),
+        account.c.eim,
+        account.c.account_type,
+    ]
 
 
 def _with_scope_state(stmt: Any) -> Any:
@@ -165,7 +184,7 @@ def _with_scope_state(stmt: Any) -> Any:
                 scope_state.c.region == resource.c.region,
                 scope_state.c.resource_type == resource.c.resource_type,
             ),
-        )
+        ).outerjoin(account, account.c.account_id == resource.c.account_id)
     )
 
 
@@ -250,17 +269,29 @@ class ResourceQueries:
             ):
                 if values:
                     where.append(scope_state.c[column].in_(values))
+            where.extend(filters.account_clauses(scope_state.c.account_id))
         else:
             source = resource
             count = func.count()
             where = filters.clauses()
-        columns = [source.c[g] for g in group_by]
+        columns = [account.c[g] if g in ACCOUNT_FIELDS else source.c[g] for g in group_by]
         stmt = select(*columns, count.label("count")).where(*where)
+        if any(g in ACCOUNT_FIELDS for g in group_by):
+            stmt = stmt.select_from(
+                source.outerjoin(account, account.c.account_id == source.c.account_id)
+            )
         if columns:
             stmt = stmt.group_by(*columns).order_by(*columns)
         rows = await self._fetch(stmt, filters)
         groups = [dict(r) | {"count": int(r["count"])} for r in rows if int(r["count"]) > 0]
         return groups, sum(g["count"] for g in groups)
+
+    async def accounts(self) -> list[RowMapping]:
+        return await self._fetch(select(account).order_by(account.c.account_id), None)
+
+    async def account(self, account_id: str) -> RowMapping | None:
+        rows = await self._fetch(select(account).where(account.c.account_id == account_id), None)
+        return rows[0] if rows else None
 
     async def coverage(self, account_id: str) -> tuple[list[RowMapping], list[RowMapping]]:
         regions = await self._fetch(

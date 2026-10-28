@@ -33,6 +33,21 @@ export interface Resource {
   observed_at: string;
   deleted_at: string | null;
   verified_at: string | null;
+  account_name: string | null;
+  eim: string | null;
+  account_type: string | null;
+}
+
+export const ACCOUNT_TYPES = ['dev', 'preprod', 'prod'] as const;
+
+/** An account as account-directory lists it; an EIM owns accounts (and so their resources). */
+export interface Account {
+  account_id: string;
+  name: string | null;
+  eim: string | null;
+  account_type: string | null;
+  status: string;
+  listed_at: string;
 }
 
 export interface StatsResponse {
@@ -134,6 +149,7 @@ export interface CoverageScope {
 
 export interface Coverage {
   account_id: string;
+  account: Account | null;
   enabled_regions: string[];
   regions_checked_at: string | null;
   scopes: CoverageScope[];

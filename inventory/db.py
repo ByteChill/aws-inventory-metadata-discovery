@@ -46,6 +46,7 @@ from ulid import ULID
 from inventory.config import CommonSettings
 from inventory.models import (
     TERMINAL_TASK_STATUSES,
+    DirectoryAccount,
     NewTask,
     ResourceKey,
     ResourceRecord,
@@ -125,6 +126,19 @@ scan_job = Table(
     Column("finished_at", TS),
     Column("deadline_at", TS),
     Column("requested_by", Text),  # principal.subject; NULL for scheduled jobs
+)
+
+# what account-directory last said about each account; rows stay when an account stops
+# being listed (it is then just not scanned), so its resources keep their EIM
+account = Table(
+    "account",
+    metadata,
+    Column("account_id", CHAR(12), primary_key=True),
+    Column("name", Text),
+    Column("eim", Text),
+    Column("account_type", Text),
+    Column("status", Text, nullable=False),
+    Column("listed_at", TS, nullable=False),
 )
 
 api_key = Table(
@@ -1039,6 +1053,35 @@ def terminal_job_status(task_statuses: Sequence[str]) -> str:
     if all(s == "failed" for s in counted):
         return "failed"
     return "partial"
+
+
+# --------------------------------------------------------------------------- accounts
+
+
+class AccountRepository:
+    def upsert(self, conn: Connection, accounts: Sequence[DirectoryAccount], now: datetime) -> None:
+        rows = [
+            {
+                "account_id": a.account_id,
+                "name": a.name,
+                "eim": a.eim,
+                "account_type": a.account_type,
+                "status": a.status,
+                "listed_at": now,
+            }
+            for a in accounts
+        ]
+        for start in range(0, len(rows), UPSERT_BATCH):
+            stmt = pg_insert(account).values(rows[start : start + UPSERT_BATCH])
+            conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[account.c.account_id],
+                    set_={
+                        k: stmt.excluded[k]
+                        for k in ("name", "eim", "account_type", "status", "listed_at")
+                    },
+                )
+            )
 
 
 # --------------------------------------------------------------------------- API keys

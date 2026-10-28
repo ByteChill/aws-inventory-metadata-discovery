@@ -1,4 +1,5 @@
 [
+  "/v1/accounts",
   "/v1/accounts/{}/coverage",
   "/v1/api-keys",
   "/v1/api-keys/{}",
