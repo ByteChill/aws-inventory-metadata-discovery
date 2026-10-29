@@ -14,7 +14,7 @@ import {
   PageTitle,
   Panel,
   Secondary,
-  Stat,
+  Facts,
   StatusTag,
   TypeName,
   When,
@@ -86,24 +86,19 @@ export function DashboardPage() {
         <Loading />
       ) : stats.data ? (
         <>
-          <div
-            className={css({
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-              gap: theme.sizing.scale600,
-              marginBottom: theme.sizing.scale600,
-            })}
-          >
-            <Stat label="EIM" value={stats.data.byEim.groups.filter((g) => g.eim !== null).length.toLocaleString()} />
-            <Stat label={t('Accounts', '账号')} value={stats.data.byAccount.groups.length.toLocaleString()} />
-            <Stat label={t('Resource types', '资源类型')} value={stats.data.byType.groups.length} />
-            <Stat label={t('Resources', '资源总数')} value={stats.data.byType.total.toLocaleString()} />
-            <Stat
-              label={t('Data refreshed', '数据更新')}
-              value={freshness ? <When value={freshness} /> : '—'}
-              hint={freshness ? undefined : t('No full scan has finished yet', '尚未完成过全量扫描')}
-            />
-          </div>
+          <Facts
+            items={[
+              { label: 'EIM', value: stats.data.byEim.groups.filter((g) => g.eim !== null).length.toLocaleString() },
+              { label: t('Accounts', '账号'), value: stats.data.byAccount.groups.length.toLocaleString() },
+              { label: t('Resource types', '资源类型'), value: stats.data.byType.groups.length },
+              { label: t('Resources', '资源总数'), value: stats.data.byType.total.toLocaleString() },
+              {
+                label: t('Data refreshed', '数据更新'),
+                value: freshness ? <When value={freshness} /> : '—',
+                hint: freshness ? undefined : t('No full scan has finished yet', '尚未完成过全量扫描'),
+              },
+            ]}
+          />
           <Panel title={t('Resources by', '资源分布')}>
             <Distribution />
           </Panel>

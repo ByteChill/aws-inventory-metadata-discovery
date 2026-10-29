@@ -7,6 +7,7 @@ import { PLACEMENT, StatefulPopover } from 'baseui/popover';
 import { useState } from 'react';
 
 import { useI18n } from '../i18n';
+import { focusRing } from './common';
 
 export interface Option {
   id: string;
@@ -41,6 +42,7 @@ export function CheckFilter({ placeholder, options, selected, onChange, summariz
         type="button"
         className={css({
           all: 'unset',
+          ...focusRing(theme),
           boxSizing: 'border-box',
           cursor: 'pointer',
           display: 'flex',

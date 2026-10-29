@@ -27,6 +27,7 @@ import {
   TechDetails,
   TypeName,
   When,
+  focusRing,
   tableOverrides,
   useNarrow,
 } from '../components/common';
@@ -44,7 +45,7 @@ const TEXT_KEYS = ['name_prefix', 'tag'] as const;
 type ListKey = (typeof LIST_KEYS)[number];
 type TextKey = (typeof TEXT_KEYS)[number];
 
-const TAGS_SHOWN = 3;
+const TAGS_SHOWN = 2;
 const TAG_SEARCH_FROM = 10; // tags in the details drawer before a search box appears
 const TAG_COLUMNS_KEY = 'inventory.tagColumns';
 
@@ -120,11 +121,12 @@ export function ResourcesPage() {
     <button
       type="button"
       title={t('Show only this', '只看这个')}
+      aria-label={t(`Show only ${label}`, `只看 ${label}`)}
       onClick={(event) => {
         event.stopPropagation();
         setFilter(name, [value]);
       }}
-      className={css({ all: 'unset', cursor: 'pointer', whiteSpace: 'nowrap', borderBottom: `1px dashed ${theme.colors.borderOpaque}`, ':hover': { color: theme.colors.contentAccent } })}
+      className={css({ all: 'unset', ...focusRing(theme), cursor: 'pointer', whiteSpace: 'nowrap', borderBottom: `1px dashed ${theme.colors.borderOpaque}`, ':hover': { color: theme.colors.contentAccent } })}
     >
       {label}
     </button>
@@ -153,8 +155,9 @@ export function ResourcesPage() {
 
   const chip = css({
     all: 'unset',
+    ...focusRing(theme),
     cursor: 'pointer',
-    maxWidth: '16rem',
+    maxWidth: '10rem',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -216,7 +219,7 @@ export function ResourcesPage() {
                   event.stopPropagation();
                   openResource(r.arn);
                 }}
-                className={css({ all: 'unset', cursor: 'pointer', ...theme.typography.ParagraphXSmall, color: theme.colors.contentAccent })}
+                className={css({ all: 'unset', ...focusRing(theme), cursor: 'pointer', ...theme.typography.ParagraphXSmall, color: theme.colors.contentAccent })}
               >
                 +{hidden.length}
               </button>
@@ -229,36 +232,65 @@ export function ResourcesPage() {
     );
   };
 
-  const fieldGrid = css({
-    display: 'grid',
-    gridTemplateColumns: narrow ? '1fr' : 'repeat(auto-fill, minmax(160px, 1fr))',
-    gap: theme.sizing.scale400,
-    alignItems: 'center',
-  });
+  // on phones only the name search shows; the other filters open on demand
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilters =
+    LIST_KEYS.reduce((n, k) => n + (filters[k]?.length ? 1 : 0), 0) + (filters.tag ? 1 : 0) + (filters.include_deleted ? 1 : 0);
+  const filterRow = css({ display: 'flex', flexWrap: 'wrap', gap: theme.sizing.scale300, alignItems: 'center' });
+  const dimension = css({ flex: narrow ? '1 1 100%' : '1 1 150px', maxWidth: narrow ? 'none' : '220px', minWidth: 0 });
+  const search = css({ flex: '1 1 220px', maxWidth: narrow ? 'none' : '340px', minWidth: 0 });
+  const nameSearch = (
+    <div className={search}>
+      <Input
+        size={SIZE.compact}
+        value={text.name_prefix}
+        placeholder={t('Search by name (starts with)', '按名称搜索（开头匹配）')}
+        onChange={(e) => typeText('name_prefix', e.currentTarget.value)}
+        clearable
+      />
+    </div>
+  );
 
   return (
     <>
       <PageTitle title={t('Resources', '资源')} subtitle={t('Everything found in the accounts, as of the latest scan.', '各账号中发现的全部资源，以最近一次扫描为准。')} />
       <Panel>
-        <div className={fieldGrid}>
+        {narrow ? (
+          <div className={filterRow}>
+            {nameSearch}
+            <Button size={SIZE.compact} kind={KIND.secondary} onClick={() => setFiltersOpen((open) => !open)} aria-expanded={filtersOpen}>
+              {activeFilters ? t(`Filters (${activeFilters})`, `筛选（${activeFilters}）`) : t('Filters', '筛选')}
+            </Button>
+          </div>
+        ) : null}
+        {!narrow || filtersOpen ? (
+        <div className={css({ display: 'grid', rowGap: theme.sizing.scale300, marginTop: narrow ? theme.sizing.scale300 : 0 })}>
+        <div className={filterRow}>
+          <div className={dimension}>
           <CheckFilter
             placeholder={t('All EIMs', '全部 EIM')}
             options={directory.eims.map((e) => ({ id: e, label: e }))}
             selected={filters.eim ?? []}
             onChange={(value) => setFilter('eim', value)}
           />
+          </div>
+          <div className={dimension}>
           <CheckFilter
             placeholder={t('All accounts', '全部账号')}
             options={accountIds.map((a) => ({ id: a, label: accountLabel(a, directory.byId.get(a)?.name) }))}
             selected={filters.account_id ?? []}
             onChange={(value) => setFilter('account_id', value)}
           />
+          </div>
+          <div className={dimension}>
           <CheckFilter
             placeholder={t('All account types', '全部账号类型')}
             options={ACCOUNT_TYPES.map((x) => ({ id: x, label: x }))}
             selected={filters.account_type ?? []}
             onChange={(value) => setFilter('account_type', value)}
           />
+          </div>
+          <div className={dimension}>
           <CheckFilter
             placeholder={t('All resource types', '全部资源类型')}
             options={(types.data?.items ?? [])
@@ -267,22 +299,19 @@ export function ResourcesPage() {
             selected={filters.resource_type ?? []}
             onChange={(value) => setFilter('resource_type', value)}
           />
+          </div>
+          <div className={dimension}>
           <CheckFilter
             placeholder={t('All regions', '全部区域')}
             options={['global', ...regions.filter((r) => r !== 'global')].map((r) => ({ id: r, label: r }))}
             selected={filters.region ?? []}
             onChange={(value) => setFilter('region', value)}
           />
-          <div className={css({ gridColumn: narrow ? 'auto' : 'span 2' })}>
-          <Input
-            size={SIZE.compact}
-            value={text.name_prefix}
-            placeholder={t('Search by name (starts with)', '按名称搜索（开头匹配）')}
-            onChange={(e) => typeText('name_prefix', e.currentTarget.value)}
-            clearable
-          />
           </div>
-          <div className={css({ gridColumn: narrow ? 'auto' : 'span 2' })}>
+        </div>
+        <div className={filterRow}>
+          {narrow ? null : nameSearch}
+          <div className={search}>
             <Input
               size={SIZE.compact}
               value={text.tag}
@@ -294,16 +323,30 @@ export function ResourcesPage() {
           <Checkbox checked={filters.include_deleted} onChange={(e) => setFilter('include_deleted', e.currentTarget.checked ? 'true' : '')}>
             {t('Include deleted', '包含已删除')}
           </Checkbox>
-          <Button size={SIZE.compact} kind={KIND.tertiary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
-            {t('Clear all', '清除全部')}
-          </Button>
+          {activeFilters || filters.name_prefix ? (
+            <Button size={SIZE.compact} kind={KIND.tertiary} onClick={() => setParams(new URLSearchParams(), { replace: true })}>
+              {t('Clear all', '清除全部')}
+            </Button>
+          ) : null}
         </div>
-      </Panel>
+        </div>
+        ) : null}
 
-      <Panel
-        title={pages.total != null ? t(`${pages.total.toLocaleString()} resources`, `共 ${pages.total.toLocaleString()} 个资源`) : t('Resources', '资源')}
-        actions={
-          narrow ? null : (
+        <div
+          className={css({
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: theme.sizing.scale400,
+            flexWrap: 'wrap',
+            marginTop: theme.sizing.scale800,
+            marginBottom: theme.sizing.scale400,
+          })}
+        >
+          <h2 className={css({ ...theme.typography.HeadingXSmall, color: theme.colors.contentPrimary, margin: 0 })}>
+            {pages.total != null ? t(`${pages.total.toLocaleString()} resources`, `共 ${pages.total.toLocaleString()} 个资源`) : t('Resources', '资源')}
+          </h2>
+          {narrow ? null : (
             <div className={css({ width: '220px' })}>
               <CheckFilter
                 placeholder={t('Tag columns', '标签列')}
@@ -313,9 +356,8 @@ export function ResourcesPage() {
                 summarize={(keys) => `${t('Tag columns', '标签列')}: ${keys.join(', ')}`}
               />
             </div>
-          )
-        }
-      >
+          )}
+        </div>
         <ErrorNotice error={first.error} />
         {narrow ? (
           <div className={css({ display: 'grid', rowGap: theme.sizing.scale300 })}>
@@ -328,6 +370,7 @@ export function ResourcesPage() {
                 onClick={() => openResource(r.arn)}
                 className={css({
                   all: 'unset',
+                  ...focusRing(theme),
                   cursor: 'pointer',
                   display: 'grid',
                   rowGap: theme.sizing.scale100,
@@ -387,17 +430,17 @@ export function ResourcesPage() {
             <TableBuilderColumn<Resource> header={t('Region', '区域')}>{(r) => filterLink('region', r.region)}</TableBuilderColumn>
             <TableBuilderColumn<Resource> header={t('Name and ARN', '名称与 ARN')}>
               {(r) => (
-                // ARNs are long: the table scrolls sideways rather than wrapping them every few letters
-                <div className={css({ minWidth: '18rem' })}>
+                // ARNs are long: one line, cut at the end, full value on hover and when copied
+                <div className={css({ minWidth: '14rem', maxWidth: '20rem' })}>
                   <button
                     type="button"
                     onClick={() => openResource(r.arn)}
-                    className={css({ all: 'unset', cursor: 'pointer', color: theme.colors.contentAccent, wordBreak: 'break-all' })}
+                    className={css({ all: 'unset', ...focusRing(theme), cursor: 'pointer', color: theme.colors.contentAccent, wordBreak: 'break-all' })}
                   >
                     {r.name || r.resource_id}
                   </button>
                   <div className={css({ marginTop: theme.sizing.scale100 })}>
-                    <Copyable value={r.arn} />
+                    <Copyable value={r.arn} truncate />
                   </div>
                 </div>
               )}
