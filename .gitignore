@@ -19,3 +19,8 @@ terraform/.terraform.lock.hcl.bak
 node_modules/
 # built web UI, filled in the api image by deploy/Containerfile
 inventory/api/ui/
+
+# Claude Code: per-user settings; the impeccable engine binary is downloaded and checksum-verified by its launcher
+.claude/settings.local.json
+.claude/skills/impeccable/scripts/bin/
+.impeccable/hook.cache.json
