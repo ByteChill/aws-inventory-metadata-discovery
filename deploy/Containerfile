@@ -4,7 +4,7 @@
 FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 
 # --------------------------------------------------------------------------- web UI (api image)
-# static files only: build on the host's own platform (esbuild crashes under amd64 emulation)
+# static files are platform-independent: build them natively on the build platform, no emulation
 FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/node:22-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
