@@ -17,5 +17,5 @@ terraform/*.tfstate*
 terraform/.terraform.lock.hcl.bak
 *.tfplan
 node_modules/
-# built web UI, filled in the api image by deploy/Containerfile
+# built web UI, filled in the api image by deploy/Dockerfile
 inventory/api/ui/

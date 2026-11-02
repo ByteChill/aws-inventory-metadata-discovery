@@ -170,20 +170,20 @@ Logs Insights 保存的查询（`aws_cloudwatch_query_definition`）：
 
 - 架构：全部 **x86_64**（Lambda `x86_64`，Fargate `X86_64`），构建只需要一个平台。
 - 每个组件有自己的版本 `x.y.z`，镜像 tag = 版本；ECR 仓库 tag 不可变（同一版本不能重复推送）。
-- 组件版本的来源（建议）：`deploy/versions.json`，如 `{"broker": "1.0.0", "planner": "1.0.0", "api": "1.0.0", "worker": "1.0.0"}`；构建脚本读取它作为 tag。组件代码有变化时在同一个 PR 中升版本。
+- 组件版本的来源（建议）：`deploy/versions.json`，如 `{"broker": "1.0.0", "planner": "1.0.0", "api": "1.0.0", "worker": "1.0.0"}`；构建脚本读取它作为 tag。组件代码有变化时在同一个 PR 中升版本；首次发布之前所有组件保持 `1.0.0`。
 - 依赖按组件拆成 `pyproject.toml` 的 optional extras（`broker`、`planner`、`api`、`worker`），公共依赖留在主依赖；仍然只有一个 `pyproject.toml`、一个包。
 - `deploy/`：
 
 ```
 deploy/
-  Containerfile        # 4 个 target：broker、planner（Lambda 基础镜像）、api、worker（slim）
+  Dockerfile           # 4 个 target：broker、planner（Lambda 基础镜像）、api、worker（slim）
   build.sh             # build.sh <component> -> 本地镜像 aws-inventory-discover/<component>:<version>（linux/amd64）
   ddl.sh               # ddl.sh <from_rev> <to_rev> -> 离线 SQL（upgrade 与 downgrade）
   versions.json
   README.md            # 构建、推送、发布、迁移的步骤
 ```
 
-推送由你们的 workflow 完成（`podman push` 到 ap-east-1 的仓库）。
+推送由你们的 workflow 完成（`docker push` 到 ap-east-1 的仓库）。
 
 ### R3. Terraform 的变化
 

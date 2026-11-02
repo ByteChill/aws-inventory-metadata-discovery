@@ -1,4 +1,4 @@
-# Local dependencies. Run with: podman compose up -d
+# Local dependencies. Run with: docker compose up -d
 # Images come from ECR Public (mirror of the Docker official images) so Docker Hub is not needed.
 # The moto server runs on the host instead: make moto
 services:

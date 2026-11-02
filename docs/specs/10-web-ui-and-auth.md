@@ -142,7 +142,7 @@ ALTER TABLE scan_job ADD COLUMN requested_by text;   -- 触发者（principal.su
 
 ## 6. 构建与部署
 
-- `deploy/Containerfile` 增加 node 构建阶段（`npm ci && npm run build`），输出复制到 api 镜像的 `inventory/api/ui/`；构建产物不进 git。
+- `deploy/Dockerfile` 增加 node 构建阶段（`npm ci && npm run build`），输出复制到 api 镜像的 `inventory/api/ui/`；构建产物不进 git。
 - 本地：`make web`（构建到 `web/dist`）。API 设置 `API_UI_DIR=web/dist` 后即可在 `/ui/` 访问；开发时用 `npm run dev`（Vite 代理 `/v1` 到 `localhost:8080`）。
 - 删除 `inventory/api/ui/` 中的原生 JS 页面。
 

@@ -47,7 +47,7 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 | `test` | `uv run pytest` |
 | `test-int` | `uv run pytest -m integration` |
 | `cov` | `uv run pytest -m "" --cov=inventory --cov-report=term-missing` |
-| `up` / `down` | `podman compose up -d` / `podman compose down` |
+| `up` / `down` | `docker compose up -d` / `docker compose down` |
 | `moto` | `uv run moto_server -p $(MOTO_PORT)`（默认 5000） |
 | `migrate` | `uv run alembic upgrade head` |
 | `queues` | 在 moto 中为 4 个 region 创建 `inventory-local-scheduled` / `-ondemand` |
@@ -57,7 +57,7 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 
 ## 2. 本地依赖服务与镜像
 
-`compose.yaml`（使用 `podman compose` 运行，不依赖 Docker）：
+`compose.yaml`（使用 `docker compose` 运行）：
 
 | 服务 | 镜像 | 端口 | 用途 |
 |---|---|---|---|
@@ -66,7 +66,7 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 
 镜像取自 ECR Public（Docker 官方镜像的副本），不依赖 Docker Hub。本地运行 API/worker 需要模拟 AWS 时，moto server 直接在本机运行：`make moto`（默认端口 5000，`MOTO_PORT` 可改）。
 
-镜像：每个组件一个，定义在 `deploy/Containerfile`（spec 08 R2）。
+镜像：每个组件一个，定义在 `deploy/Dockerfile`（spec 08 R2）。
 
 ## 3. 配置（`inventory/config.py`）
 
@@ -230,7 +230,7 @@ class ClientFactory:
 ## 验收标准
 
 - `make check` 通过；`make up` 后 `make test-int` 可运行（此时可以没有集成用例）。
-- `make images` 能在 podman 上构建成功。
+- `make images` 能用 Docker 构建成功。
 - README 的"本地开发"一节与实际命令一致。
 
 ## 实现修订（收尾审查后）

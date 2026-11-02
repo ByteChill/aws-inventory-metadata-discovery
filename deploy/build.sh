@@ -17,9 +17,9 @@ version="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.
   "$root/deploy/versions.json" "$component")"
 image="${IMAGE_NAMESPACE:-aws-inventory-discover}/${component}:${version}"
 
-podman build \
+docker build \
   --platform linux/amd64 \
-  --file "$root/deploy/Containerfile" \
+  --file "$root/deploy/Dockerfile" \
   --target "$component" \
   --label "org.opencontainers.image.version=${version}" \
   --label "org.opencontainers.image.revision=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)" \
