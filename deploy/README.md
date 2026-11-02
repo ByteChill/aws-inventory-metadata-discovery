@@ -7,7 +7,7 @@ Build commands for the release workflow. Deployment itself is done by Terraform
 | 文件 | 用途 |
 |---|---|
 | `versions.json` | 每个组件的版本 `x.y.z`，即镜像 tag |
-| `Containerfile` | 4 个 target：`broker`、`planner`（Lambda 基础镜像）、`api`、`worker`（python slim） |
+| `Dockerfile` | 4 个 target：`broker`、`planner`（Lambda 基础镜像）、`api`、`worker`（python slim） |
 | `build.sh` | `deploy/build.sh <component>`：构建 linux/amd64 镜像，输出 `aws-inventory-discover/<component>:<version>` |
 | `ddl.sh` | `deploy/ddl.sh <from> <to>`：生成离线 SQL（upgrade 与 downgrade）到 `dist/ddl/` |
 
@@ -24,15 +24,15 @@ Build commands for the release workflow. Deployment itself is done by Terraform
 
 ## 发布
 
-1. 组件代码有变化时，在同一个 PR 中升高 `versions.json` 中它的版本（ECR 的 tag 不可变，同一版本不能重复推送）。
-2. 构建并推送（需要 Podman、python3、AWS CLI 以及 ECR 推送权限）：
+1. 组件代码有变化时，在同一个 PR 中升高 `versions.json` 中它的版本（ECR 的 tag 不可变，同一版本不能重复推送）。首次发布之前所有组件保持 `1.0.0`。
+2. 构建并推送（需要 Docker、python3、AWS CLI 以及 ECR 推送权限）：
 
 ```bash
 aws ecr get-login-password --region ap-east-1 \
-  | podman login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
+  | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
 image=$(deploy/build.sh api)
-podman tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
-podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+docker tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+docker push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
 ```
 
 worker 镜像由 ECR 复制规则复制到其他扫描 region。

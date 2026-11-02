@@ -24,14 +24,14 @@
 | AWS SDK | boto3，只通过 `ClientFactory` 创建 client |
 | 测试 | pytest、moto、fakeredis[lua]、respx、time-machine |
 | 代码质量 | ruff（lint + format，行宽 100）、mypy（`inventory/` 为 strict） |
-| 容器 | Podman（`podman build` / `podman compose`）；每个组件一个镜像（`deploy/Containerfile`），x86_64 |
+| 容器 | Docker（`docker build`，需要 BuildKit / Docker ≥ 23；`docker compose`）；每个组件一个镜像（`deploy/Dockerfile`），x86_64 |
 | IaC | Terraform ≥ 1.10 |
 
 ## 常用命令
 
 ```bash
 make setup      # uv sync
-make up         # podman compose up -d（PostgreSQL、Redis）
+make up         # docker compose up -d（PostgreSQL、Redis）
 make moto       # 本机运行 moto server（默认端口 5000，MOTO_PORT 可改），本地跑 API/worker 时使用
 make migrate    # alembic upgrade head
 make fmt        # 格式化并自动修复
@@ -146,7 +146,7 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 2. **跨组件消息带版本**：SQS 消息与 broker 请求 / 响应带 `version`；改格式时先发布同时接受新旧格式的接收方，再改发送方。
 3. **新增资源类型的顺序**：迁移（建分区，随 worker 镜像发布）→ worker → planner / API。
 4. **新增环境变量**：必须有默认值，或先在 Terraform 中配置再发布使用它的代码。
-5. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。
+5. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。首次发布之前所有组件保持 `1.0.0`，不升版本。
 
 ## 不要做
 
@@ -155,4 +155,4 @@ Terraform：`terraform -chdir=terraform fmt -recursive`，`terraform -chdir=terr
 - 不要直接 `boto3.client(...)`、直接读 `os.environ`、使用 `print`。
 - 不要用 ORM 或 autogenerate 的迁移直接提交。
 - 不要实现方案 B 或变更历史（spec 09），除非 spec 已更新为"实现"。
-- 不要使用 Docker 专属的命令或配置；本地容器工具是 Podman。
+- 容器工具是 Docker；构建与 compose 配置不要依赖某台机器特有的设置。

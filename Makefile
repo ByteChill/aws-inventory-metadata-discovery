@@ -24,10 +24,10 @@ cov:
 	uv run pytest -m "" --cov=inventory --cov-report=term-missing
 
 up:
-	podman compose up -d
+	docker compose up -d
 
 down:
-	podman compose down
+	docker compose down
 
 MOTO_PORT ?= 5000
 

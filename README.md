@@ -25,15 +25,15 @@ EventBridge Scheduler (4h) ─► Step Functions ─► planner λ ─► 各 re
 
 ## 技术栈
 
-Python 3.12 · uv · FastAPI · pydantic v2 · pydantic-settings · SQLAlchemy Core + psycopg 3 · Alembic · boto3 · AWS Lambda Powertools · Redis · pytest + moto · Terraform · Podman
+Python 3.12 · uv · FastAPI · pydantic v2 · pydantic-settings · SQLAlchemy Core + psycopg 3 · Alembic · boto3 · AWS Lambda Powertools · Redis · pytest + moto · Terraform · Docker
 
 ## 仓库结构
 
 ```
 pyproject.toml / uv.lock     唯一的项目配置与依赖锁
 Makefile                     常用命令
-compose.yaml                 本地依赖：PostgreSQL、Redis、moto server（podman compose）
-deploy/                      镜像构建（Containerfile、build.sh、versions.json）与离线 DDL（ddl.sh）
+compose.yaml                 本地依赖：PostgreSQL、Redis（docker compose）
+deploy/                      镜像构建（Dockerfile、build.sh、versions.json）与离线 DDL（ddl.sh）
 web/                         Web UI（React + baseui + Vite），构建后由 API 在 /ui/ 提供
 inventory/                   唯一的 Python 包
   config.py                  所有配置（pydantic-settings）
@@ -62,7 +62,7 @@ docs/                        设计、API 契约、spec
 |---|---|---|
 | Python | 3.12 | uv 会自动安装 |
 | uv | 最新 | <https://docs.astral.sh/uv/getting-started/installation/> |
-| Podman + podman compose | Podman ≥ 4.7 | <https://podman.io/docs/installation>；`uv tool install podman-compose`。macOS / Windows 还需要 `podman machine init && podman machine start` |
+| Docker + Docker Compose | Docker ≥ 23（默认启用 BuildKit） | <https://docs.docker.com/get-started/get-docker/> |
 | Terraform | ≥ 1.10 | <https://developer.hashicorp.com/terraform/install> |
 | Node.js | 22 | 只在构建或开发 Web UI 时需要；镜像构建在容器内完成，不需要本机 Node |
 
@@ -70,7 +70,7 @@ docs/                        设计、API 契约、spec
 
 ```bash
 make setup        # uv sync，安装全部依赖
-make up           # podman compose up -d：PostgreSQL、Redis（镜像来自 ECR Public，不需要 Docker Hub）
+make up           # docker compose up -d：PostgreSQL、Redis（镜像来自 ECR Public，不需要 Docker Hub）
 make moto         # 本机运行 moto server（默认端口 5000，MOTO_PORT 可改），本地跑 API/worker 时使用
 make migrate      # alembic upgrade head
 make queues       # 在 moto 中创建各 region 的扫描队列（按名字查找，与 AWS 一致）
@@ -137,15 +137,15 @@ M1 与 M2 可以并行；M5、M6 可以与 M3、M4 并行。
 
 ### 发布一个组件
 
-1. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。
-2. workflow 构建并推送镜像到 primary region（ap-east-1）的 ECR（需要 Podman、python3、AWS CLI 以及 ECR 推送权限）：
+1. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本（首次发布之前所有组件保持 `1.0.0`）。
+2. workflow 构建并推送镜像到 primary region（ap-east-1）的 ECR（需要 Docker、python3、AWS CLI 以及 ECR 推送权限）：
 
 ```bash
 aws ecr get-login-password --region ap-east-1 \
-  | podman login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
+  | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
 image=$(deploy/build.sh worker)          # 输出 aws-inventory-discover/worker:<version>
-podman tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
-podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+docker tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
+docker push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
 ```
 
 3. 修改 `terraform/envs/<env>.tfvars` 中的 `component_versions` → 提 PR → 合并后打 tag → workflow 执行 `terraform apply`。只改了哪个组件的版本，就只发布哪个组件。
