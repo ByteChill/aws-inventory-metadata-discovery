@@ -48,7 +48,7 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 | `test-int` | `uv run pytest -m integration` |
 | `cov` | `uv run pytest -m "" --cov=inventory --cov-report=term-missing` |
 | `up` / `down` | `podman compose up -d` / `podman compose down` |
-| `moto` | `uv run moto_server -p 5000` |
+| `moto` | `uv run moto_server -p $(MOTO_PORT)`（默认 5000） |
 | `migrate` | `uv run alembic upgrade head` |
 | `queues` | 在 moto 中为 4 个 region 创建 `inventory-local-scheduled` / `-ondemand` |
 | `images` | `deploy/build.sh <component>` × 4（linux/amd64） |
@@ -64,7 +64,7 @@ tests/test_config.py  tests/test_observability.py  tests/test_aws_clients.py
 | `postgres` | `public.ecr.aws/docker/library/postgres:16-alpine` | 5432 | 集成测试与本地运行，库/用户/密码均为 `inventory` |
 | `redis` | `public.ecr.aws/docker/library/redis:7-alpine` | 6379 | 集成测试与本地运行 broker |
 
-镜像取自 ECR Public（Docker 官方镜像的副本），不依赖 Docker Hub。本地运行 API/worker 需要模拟 AWS 时，moto server 直接在本机运行：`make moto`（即 `uv run moto_server -p 5000`）。
+镜像取自 ECR Public（Docker 官方镜像的副本），不依赖 Docker Hub。本地运行 API/worker 需要模拟 AWS 时，moto server 直接在本机运行：`make moto`（默认端口 5000，`MOTO_PORT` 可改）。
 
 镜像：每个组件一个，定义在 `deploy/Containerfile`（spec 08 R2）。
 
@@ -230,7 +230,7 @@ class ClientFactory:
 ## 验收标准
 
 - `make check` 通过；`make up` 后 `make test-int` 可运行（此时可以没有集成用例）。
-- `make image` 能在 podman 上构建成功。
+- `make images` 能在 podman 上构建成功。
 - README 的"本地开发"一节与实际命令一致。
 
 ## 实现修订（收尾审查后）

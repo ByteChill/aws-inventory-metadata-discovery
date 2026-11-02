@@ -29,8 +29,10 @@ up:
 down:
 	podman compose down
 
+MOTO_PORT ?= 5000
+
 moto:
-	uv run moto_server -p 5000
+	uv run moto_server -p $(MOTO_PORT)
 
 migrate:
 	uv run alembic upgrade head

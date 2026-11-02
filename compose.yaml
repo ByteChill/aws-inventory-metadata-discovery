@@ -1,6 +1,6 @@
 # Local dependencies. Run with: podman compose up -d
 # Images come from ECR Public (mirror of the Docker official images) so Docker Hub is not needed.
-# The moto server runs on the host instead: uv run moto_server -p 5000
+# The moto server runs on the host instead: make moto
 services:
   postgres:
     image: public.ecr.aws/docker/library/postgres:16-alpine

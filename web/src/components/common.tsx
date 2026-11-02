@@ -1,9 +1,9 @@
-import { useStyletron } from 'baseui';
+import { useStyletron, type Theme } from 'baseui';
 import { Accordion, Panel as AccordionPanel } from 'baseui/accordion';
 import { KIND as NOTIFICATION_KIND, Notification } from 'baseui/notification';
 import { Spinner } from 'baseui/spinner';
 import { HIERARCHY, KIND as TAG_KIND, Tag } from 'baseui/tag';
-import { HeadingSmall, LabelSmall, ParagraphSmall } from 'baseui/typography';
+import { HeadingXSmall, LabelSmall, ParagraphSmall } from 'baseui/typography';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, type LinkProps } from 'react-router-dom';
 
@@ -53,10 +53,31 @@ export function StatusTag({ status }: { status: string }) {
   );
 }
 
+/** Keyboard focus for controls styled with `all: unset` (which also removes the browser's
+ * focus ring): spread into the control's style. Mouse clicks do not show it. */
+export function focusRing(theme: Theme) {
+  return {
+    ':focus-visible': {
+      outline: `2px solid ${theme.colors.borderSelected}`,
+      outlineOffset: '2px',
+    },
+  };
+}
+
 /** Table cells centred vertically, so tags line up with the text next to them. */
 export const tableOverrides = {
-  TableBodyCell: { style: { verticalAlign: 'middle' } },
-  TableHeadCell: { style: { verticalAlign: 'middle' } },
+  TableBodyCell: { style: { verticalAlign: 'middle', paddingLeft: '12px', paddingRight: '12px' } },
+  // headers are labels for the column, quieter than the data under them
+  TableHeadCell: {
+    style: ({ $theme }: { $theme: Theme }) => ({
+      verticalAlign: 'middle',
+      paddingLeft: '12px',
+      paddingRight: '12px',
+      whiteSpace: 'nowrap',
+      ...$theme.typography.LabelSmall,
+      color: $theme.colors.contentSecondary,
+    }),
+  },
   // on phones the wrapper scrolls sideways instead of squeezing words letter by letter
   Root: { style: { width: '100%' } },
   Table: { style: { width: '100%', minWidth: '640px' } },
@@ -110,8 +131,10 @@ export function Panel({ title, actions, children }: { title?: ReactNode; actions
         border: `1px solid ${theme.colors.borderOpaque}`,
         borderRadius: theme.borders.radius400,
         padding: theme.sizing.scale600,
-        marginBottom: theme.sizing.scale600,
+        // blocks sit further apart than the things inside them
+        marginBottom: theme.sizing.scale800,
         minWidth: 0,
+        [theme.mediaQuery.medium]: { padding: theme.sizing.scale700 },
       })}
     >
       {title || actions ? (
@@ -125,7 +148,7 @@ export function Panel({ title, actions, children }: { title?: ReactNode; actions
             marginBottom: theme.sizing.scale500,
           })}
         >
-          {title ? <HeadingSmall margin={0}>{title}</HeadingSmall> : <span />}
+          {title ? <HeadingXSmall margin={0} $style={{ textWrap: 'balance' }}>{title}</HeadingXSmall> : <span />}
           {actions}
         </div>
       ) : null}
@@ -144,15 +167,15 @@ export function PageTitle({ title, subtitle, actions }: { title: ReactNode; subt
         justifyContent: 'space-between',
         gap: theme.sizing.scale600,
         flexWrap: 'wrap',
-        marginBottom: theme.sizing.scale700,
+        marginBottom: theme.sizing.scale800,
       })}
     >
       <div className={css({ minWidth: 0 })}>
-        <h1 className={css({ ...theme.typography.HeadingMedium, color: theme.colors.contentPrimary, margin: 0, wordBreak: 'break-word' })}>
+        <h1 className={css({ ...theme.typography.HeadingMedium, color: theme.colors.contentPrimary, margin: 0, wordBreak: 'break-word', textWrap: 'balance' })}>
           {title}
         </h1>
         {subtitle ? (
-          <ParagraphSmall margin={0} color="contentSecondary">
+          <ParagraphSmall marginTop="scale200" marginBottom={0} color="contentSecondary">
             {subtitle}
           </ParagraphSmall>
         ) : null}
@@ -185,8 +208,9 @@ export function Mono({ children }: { children: ReactNode }) {
   return <span className={css({ ...theme.typography.MonoParagraphXSmall, wordBreak: 'break-all' })}>{children}</span>;
 }
 
-/** A value people paste elsewhere (an ARN), with a copy button. */
-export function Copyable({ value }: { value: string }) {
+/** A value people paste elsewhere (an ARN), with a copy button. `truncate` keeps it on one
+ * line (tables); the full value is in the tooltip and on the clipboard. */
+export function Copyable({ value, truncate = false }: { value: string; truncate?: boolean }) {
   const [css, theme] = useStyletron();
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -197,21 +221,43 @@ export function Copyable({ value }: { value: string }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <span className={css({ display: 'inline-flex', alignItems: 'flex-start', gap: theme.sizing.scale200 })}>
-      <Mono>{value}</Mono>
+    <span className={css({ display: 'inline-flex', alignItems: 'flex-start', gap: theme.sizing.scale200, maxWidth: '100%' })}>
+      {truncate ? (
+        <span title={value} className={css({ ...theme.typography.MonoParagraphXSmall, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 })}>
+          {value}
+        </span>
+      ) : (
+        <Mono>{value}</Mono>
+      )}
       <button
         type="button"
         onClick={(event) => void copy(event)}
-        title={t('Copy', '复制')}
+        title={copied ? t('Copied', '已复制') : t('Copy', '复制')}
+        aria-label={copied ? t('Copied', '已复制') : t('Copy', '复制')}
         className={css({
           all: 'unset',
           cursor: 'pointer',
           flexShrink: 0,
-          ...theme.typography.ParagraphXSmall,
-          color: copied ? theme.colors.contentPositive : theme.colors.contentAccent,
+          display: 'inline-flex',
+          // the hit area is larger than the 14px mark
+          padding: '3px',
+          margin: '-3px 0',
+          borderRadius: theme.borders.radius200,
+          color: copied ? theme.colors.contentPositive : theme.colors.contentTertiary,
+          ':hover': { color: copied ? theme.colors.contentPositive : theme.colors.contentAccent },
+          ...focusRing(theme),
         })}
       >
-        {copied ? t('Copied', '已复制') : t('Copy', '复制')}
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          {copied ? (
+            <path d="M3 8.5l3 3 7-7" />
+          ) : (
+            <>
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+              <path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+            </>
+          )}
+        </svg>
       </button>
     </span>
   );
@@ -251,23 +297,49 @@ export function KeyValues({ items }: { items: Array<[string, ReactNode]> }) {
   );
 }
 
-/** Horizontal bars, largest first: a dependency-free chart for counts. */
-export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: ReactNode }) {
+export interface Fact {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+}
+
+/** A row of headline figures in one band, divided by hairlines rather than boxed one by
+ * one. `framed` draws the band's own border; inside a Panel leave it off. */
+export function Facts({ items, framed = true }: { items: Fact[]; framed?: boolean }) {
   const [css, theme] = useStyletron();
   return (
     <div
       className={css({
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         backgroundColor: theme.colors.backgroundPrimary,
-        border: `1px solid ${theme.colors.borderOpaque}`,
+        border: framed ? `1px solid ${theme.colors.borderOpaque}` : 'none',
         borderRadius: theme.borders.radius400,
-        padding: theme.sizing.scale600,
+        overflow: 'hidden',
+        marginBottom: framed ? theme.sizing.scale800 : 0,
       })}
     >
-      <LabelSmall color="contentSecondary">{label}</LabelSmall>
-      <div className={css({ ...theme.typography.HeadingLarge, color: theme.colors.contentPrimary, fontVariantNumeric: 'tabular-nums', marginTop: theme.sizing.scale200 })}>
-        {value}
-      </div>
-      {hint ? <LabelSmall color="contentTertiary">{hint}</LabelSmall> : null}
+      {items.map((item) => (
+        <div
+          key={item.label}
+          className={css({
+            // hairlines on each figure's right and bottom; the band clips the outer ones, and
+            // an empty cell in a wrapped last row stays plain
+            boxShadow: `1px 0 0 ${theme.colors.borderOpaque}, 0 1px 0 ${theme.colors.borderOpaque}`,
+            paddingTop: theme.sizing.scale500,
+            paddingBottom: theme.sizing.scale500,
+            paddingLeft: theme.sizing.scale600,
+            paddingRight: theme.sizing.scale600,
+            minWidth: 0,
+          })}
+        >
+          <LabelSmall color="contentSecondary">{item.label}</LabelSmall>
+          <div className={css({ ...theme.typography.HeadingSmall, color: theme.colors.contentPrimary, fontVariantNumeric: 'tabular-nums', marginTop: theme.sizing.scale100 })}>
+            {item.value}
+          </div>
+          {item.hint ? <LabelSmall color="contentTertiary">{item.hint}</LabelSmall> : null}
+        </div>
+      ))}
     </div>
   );
 }
@@ -276,7 +348,7 @@ export function Stat({ label, value, hint }: { label: string; value: ReactNode; 
 export function When({ value }: { value: string | null | undefined }) {
   if (!value) return <span>—</span>;
   return (
-    <span title={value} style={{ whiteSpace: 'nowrap' }}>
+    <span title={value} style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
       {formatTime(value)}
     </span>
   );
@@ -286,7 +358,8 @@ const SERVICE_COLORS: Record<string, string> = {
   EC2: '#E07B00',
   ECS: '#C7511F',
   S3: '#3F8624',
-  IAM: '#C7131F',
+  // not the red that means "failed" elsewhere
+  IAM: '#B0084D',
   Route53: '#8C4FFF',
 };
 
@@ -305,7 +378,7 @@ export function TypeName({ type }: { type: string }) {
           padding: '1px 4px',
           borderRadius: '4px',
           textAlign: 'center',
-          fontSize: '10px',
+          fontSize: '11px',
           fontWeight: 700,
           lineHeight: '16px',
           color: '#fff',

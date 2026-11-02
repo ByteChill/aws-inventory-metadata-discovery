@@ -19,7 +19,7 @@ import {
   ScopeTag,
   Panel,
   Secondary,
-  Stat,
+  Facts,
   StatusTag,
   startedBy,
   TechDetails,
@@ -77,7 +77,15 @@ export function JobPage() {
     };
   }, [jobId]);
 
-  if (!job) return error ? <ErrorNotice error={error} /> : <Loading />;
+  if (!job)
+    return error ? (
+      <>
+        <PageTitle title={t('Scan', '扫描')} actions={<AppLink to="/scans">{t('All scans', '全部扫描')}</AppLink>} />
+        <ErrorNotice error={error} />
+      </>
+    ) : (
+      <Loading />
+    );
   const total = job.stats.tasks_total ?? 0;
   const done = job.stats.tasks_done ?? 0;
   const finished = TERMINAL_JOB.has(job.status);
@@ -144,18 +152,16 @@ export function JobPage() {
           getProgressLabel={() => (total ? t(`${done} of ${total} parts done`, `已完成 ${done}/${total} 个部分`) : t('Waiting to start', '等待开始'))}
         />
         {job.error ? <ErrorText code={job.error.split(':')[0]} /> : null}
-        <div
-          className={css({
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-            gap: theme.sizing.scale500,
-            marginTop: theme.sizing.scale600,
-          })}
-        >
-          <Stat label={t('Added', '新增')} value={job.stats.created ?? 0} />
-          <Stat label={t('Updated', '更新')} value={job.stats.updated ?? 0} />
-          <Stat label={t('Removed', '删除')} value={job.stats.deleted ?? 0} />
-          <Stat label={t('Unchanged', '无变化')} value={job.stats.unchanged ?? 0} />
+        <div className={css({ marginTop: theme.sizing.scale600 })}>
+          <Facts
+            framed={false}
+            items={[
+              { label: t('Added', '新增'), value: job.stats.created ?? 0 },
+              { label: t('Updated', '更新'), value: job.stats.updated ?? 0 },
+              { label: t('Removed', '删除'), value: job.stats.deleted ?? 0 },
+              { label: t('Unchanged', '无变化'), value: job.stats.unchanged ?? 0 },
+            ]}
+          />
         </div>
       </Panel>
       {job.tasks ? (

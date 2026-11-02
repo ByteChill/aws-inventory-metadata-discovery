@@ -8,8 +8,9 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ACCOUNT_TYPES } from '../api/types';
 import { useI18n } from '../i18n';
+import { typeLabel } from '../i18n/labels';
 import { accountLabel, useAccounts } from './accounts';
-import { Empty, ErrorNotice, Loading, TypeName } from './common';
+import { Empty, ErrorNotice, Loading, TypeName, focusRing } from './common';
 import { useAsync } from './useAsync';
 
 type Dimension = 'eim' | 'account_id' | 'account_type' | 'resource_type' | 'region';
@@ -61,7 +62,7 @@ function toRows(groups: Array<Record<string, string | number | null>>, dimension
 export function Distribution() {
   const [css, theme] = useStyletron();
   const navigate = useNavigate();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const directory = useAccounts();
   const [dimension, setDimension] = useState<Dimension>('eim');
   const stats = useAsync(
@@ -90,6 +91,14 @@ export function Distribution() {
     if (dimension === 'resource_type') return <TypeName type={row.key} />;
     return row.key;
   };
+  // the same label as plain text, for screen readers on the bar segments
+  const labelText = (row: Row): string => {
+    if (row.other) return t(`Other (${row.folded})`, `其他（${row.folded} 项）`);
+    if (row.key === null) return dimension === 'eim' ? t('No EIM', '无 EIM') : '—';
+    if (dimension === 'account_id') return accountLabel(row.key, directory.byId.get(row.key)?.name);
+    if (dimension === 'resource_type') return typeLabel(row.key, lang);
+    return row.key;
+  };
   const open = (row: Row, type?: string) => {
     if (row.other || row.key === null) return;
     const query = new URLSearchParams({ [dimension]: row.key });
@@ -112,11 +121,14 @@ export function Distribution() {
         <ButtonGroup
           mode={MODE.radio}
           size={SIZE.compact}
+          overrides={{ Root: { style: { flexWrap: 'wrap', rowGap: theme.sizing.scale200 } } }}
           selected={DIMENSIONS.indexOf(dimension)}
           onClick={(_, index) => setDimension(DIMENSIONS[index])}
         >
           {DIMENSIONS.map((d) => (
-            <Button key={d}>{names[d]}</Button>
+            <Button key={d} overrides={{ BaseButton: { style: { whiteSpace: 'nowrap' } } }}>
+              {names[d]}
+            </Button>
           ))}
         </ButtonGroup>
         <div className={css({ display: 'flex', gap: theme.sizing.scale500, flexWrap: 'wrap', ...theme.typography.ParagraphXSmall, color: theme.colors.contentSecondary })}>
@@ -142,7 +154,8 @@ export function Distribution() {
               key={row.other ? '__other' : (row.key ?? '__none')}
               className={css({
                 display: 'grid',
-                gridTemplateColumns: 'minmax(0, 15rem) 1fr 4rem',
+                // the label column gives way on phones so the bars keep room
+                gridTemplateColumns: 'minmax(0, min(15rem, 40%)) 1fr 3rem',
                 alignItems: 'center',
                 columnGap: theme.sizing.scale500,
                 minHeight: '28px',
@@ -156,6 +169,7 @@ export function Distribution() {
                 onClick={() => open(row)}
                 className={css({
                   all: 'unset',
+                  ...focusRing(theme),
                   cursor: clickable ? 'pointer' : 'default',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -179,10 +193,11 @@ export function Distribution() {
                   >
                     <button
                       type="button"
-                      aria-label={`${typeName(s)}: ${row.parts[s]}`}
+                      aria-label={`${labelText(row)} · ${typeName(s)}: ${row.parts[s]}`}
                       onClick={() => open(row, s)}
                       className={css({
                         all: 'unset',
+                        ...focusRing(theme),
                         cursor: clickable ? 'pointer' : 'default',
                         width: `${(row.parts[s] / max) * 100}%`,
                         minWidth: '3px',

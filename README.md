@@ -61,18 +61,17 @@ docs/                        设计、API 契约、spec
 | 工具 | 版本 | 安装 |
 |---|---|---|
 | Python | 3.12 | uv 会自动安装 |
-| uv | 最新 | `brew install uv` |
-| Podman + podman compose | Podman ≥ 4.7 | `brew install podman`、`uv tool install podman-compose`，然后 `podman machine init && podman machine start` |
-| Terraform | ≥ 1.10 | `brew install terraform` |
+| uv | 最新 | <https://docs.astral.sh/uv/getting-started/installation/> |
+| Podman + podman compose | Podman ≥ 4.7 | <https://podman.io/docs/installation>；`uv tool install podman-compose`。macOS / Windows 还需要 `podman machine init && podman machine start` |
+| Terraform | ≥ 1.10 | <https://developer.hashicorp.com/terraform/install> |
+| Node.js | 22 | 只在构建或开发 Web UI 时需要；镜像构建在容器内完成，不需要本机 Node |
 
 ## 本地开发
-
-> 以下命令在 M0（[spec 00](docs/specs/00-foundation.md)）完成后可用。
 
 ```bash
 make setup        # uv sync，安装全部依赖
 make up           # podman compose up -d：PostgreSQL、Redis（镜像来自 ECR Public，不需要 Docker Hub）
-make moto         # 本机运行 moto server（端口 5000），本地跑 API/worker 时使用
+make moto         # 本机运行 moto server（默认端口 5000，MOTO_PORT 可改），本地跑 API/worker 时使用
 make migrate      # alembic upgrade head
 make queues       # 在 moto 中创建各 region 的扫描队列（按名字查找，与 AWS 一致）
 make check        # ruff + mypy + 单元测试
@@ -87,18 +86,18 @@ make down         # 停止本地依赖
 
 本地配置：复制 `.env.example` 为 `.env`（pydantic-settings 会自动读取 `INVENTORY_*` 等配置），默认指向 compose 中的服务，`INVENTORY_AWS_ENDPOINT_URL` 指向 moto server。其中的 `AWS_*` 变量 boto3 不会从 `.env` 读取，需要先导出：`set -a; source .env; set +a`。
 
-本地运行各组件（M3/M4 完成后）：
+本地运行各组件：
 
 ```bash
 uv run uvicorn --factory inventory.api.app:create_app --reload --port 8080    # API
 uv run python -m inventory.handlers.worker                   # worker（使用 .env 中的 WORKER_REGION）
 ```
 
-Web UI（[spec 10](docs/specs/10-web-ui-and-auth.md)，baseui）：需要 Node 22。`make web` 构建到 `web/dist`，启动 API 时设置 `API_UI_DIR=web/dist`，浏览器打开 <http://localhost:8080/ui/>；改界面时用 `make web-dev`（Vite，端口 5173，`/v1` 代理到 8080）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
+Web UI（[spec 10](docs/specs/10-web-ui-and-auth.md)，baseui）：`make web` 构建到 `web/dist`，启动 API 时设置 `API_UI_DIR=web/dist`，浏览器打开 <http://localhost:8080/ui/>；改界面时用 `make web-dev`（Vite，端口 5173，`/v1` 代理到 8080）。本地没有 broker Lambda，扫描与刷新会以 broker 错误结束，UI 会显示错误码与 `request_id`。
 
 认证默认关闭（`API_AUTH_MODE=disabled`，所有调用方都是 admin）。接入 SSO 后设置 `API_AUTH_MODE=enforced` 与 `API_JWT_JWKS_URL`、`API_JWT_ISSUER`、`API_JWT_AUDIENCE`；用户用 SSO 的 JWT，其他服务用 admin 在 UI 中创建的 API key（`X-API-Key`）。见 [api.md §1.5](docs/api.md)。
 
-macOS 的"隔空播放接收器"默认占用 5000 端口：可在系统设置中关闭，或运行 `uv run moto_server -p 5001` 并把 `.env` 中的 `localhost:5000` 改为 `localhost:5001`。
+5000 端口被占用时（例如 macOS 的"隔空播放接收器"），换一个端口：`make moto MOTO_PORT=5001`，并把 `.env` 中的 `INVENTORY_AWS_ENDPOINT_URL` 改为同一端口。
 
 ## 开发流程
 
@@ -139,9 +138,11 @@ M1 与 M2 可以并行；M5、M6 可以与 M3、M4 并行。
 ### 发布一个组件
 
 1. 组件代码有变化时，在同一个 PR 中升高 `deploy/versions.json` 中它的版本。
-2. workflow 构建并推送镜像到 primary region（ap-east-1）的 ECR：
+2. workflow 构建并推送镜像到 primary region（ap-east-1）的 ECR（需要 Podman、python3、AWS CLI 以及 ECR 推送权限）：
 
 ```bash
+aws ecr get-login-password --region ap-east-1 \
+  | podman login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
 image=$(deploy/build.sh worker)          # 输出 aws-inventory-discover/worker:<version>
 podman tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
 podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image

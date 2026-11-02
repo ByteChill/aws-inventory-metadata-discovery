@@ -32,7 +32,7 @@
 ```bash
 make setup      # uv sync
 make up         # podman compose up -d（PostgreSQL、Redis）
-make moto       # 本机运行 moto server（端口 5000），本地跑 API/worker 时使用
+make moto       # 本机运行 moto server（默认端口 5000，MOTO_PORT 可改），本地跑 API/worker 时使用
 make migrate    # alembic upgrade head
 make fmt        # 格式化并自动修复
 make check      # lint + typecheck + 单元测试（提交前必须通过）

@@ -1,4 +1,4 @@
-import { useStyletron } from 'baseui';
+import { useStyletron, type Theme } from 'baseui';
 import { Button, KIND, SIZE } from 'baseui/button';
 import { PLACEMENT, StatefulPopover } from 'baseui/popover';
 import { toaster } from 'baseui/toast';
@@ -8,24 +8,25 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import type { CoverageScope, ScanScope } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
-import { ErrorNotice, KeyValues, Loading, PageTitle, Panel, Secondary, Stat, StatusTag, TypeName, When } from '../components/common';
+import { ErrorNotice, KeyValues, Loading, PageTitle, Panel, Secondary, Facts, StatusTag, TypeName, When } from '../components/common';
 import { useAsync } from '../components/useAsync';
 import { useI18n } from '../i18n';
-import { errorText, serviceOf, typeLabel } from '../i18n/labels';
+import { errorText, serviceOf, statusLabel, typeLabel } from '../i18n/labels';
 
-// status colours only for the people who run scans; everyone else sees counts
-const STATUS_COLORS: Record<string, string> = {
-  succeeded: '#E6F2ED',
-  failed: '#FFEFED',
-  auth_denied: '#FFF3EF',
-  never: '#F6F6F6',
-};
-const STATUS_BORDERS: Record<string, string> = {
-  succeeded: '#3AA76D',
-  failed: '#E11900',
-  auth_denied: '#ED6E33',
-  never: '#CBCBCB',
-};
+// status colours only for the people who run scans; everyone else sees counts. They come
+// from the theme, so they hold in dark mode; "never scanned" is the quietest state.
+function statusColors(status: string, theme: Theme): { background: string; border: string; dashed?: boolean } {
+  switch (status) {
+    case 'succeeded':
+      return { background: theme.colors.backgroundPositiveLight, border: theme.colors.borderPositive };
+    case 'failed':
+      return { background: theme.colors.backgroundNegativeLight, border: theme.colors.borderNegative };
+    case 'auth_denied':
+      return { background: theme.colors.backgroundWarningLight, border: theme.colors.borderWarning };
+    default:
+      return { background: 'transparent', border: theme.colors.borderOpaque, dashed: true };
+  }
+}
 
 export function CoveragePage() {
   const [css, theme] = useStyletron();
@@ -70,6 +71,9 @@ export function CoveragePage() {
       navigate(
         `/resources?account_id=${encodeURIComponent(accountId)}&region=${encodeURIComponent(scope.region)}&resource_type=${encodeURIComponent(scope.resource_type)}`,
       );
+    const colors = managesScans
+      ? statusColors(scope.status, theme)
+      : { background: theme.colors.backgroundSecondary, border: theme.colors.borderOpaque };
     const box = (
       <button
         type="button"
@@ -79,9 +83,9 @@ export function CoveragePage() {
           minWidth: '56px',
           padding: '6px 8px',
           borderRadius: theme.borders.radius200,
-          border: `1px solid ${managesScans ? STATUS_BORDERS[scope.status] ?? theme.colors.borderOpaque : theme.colors.borderOpaque}`,
-          backgroundColor: managesScans ? STATUS_COLORS[scope.status] ?? theme.colors.backgroundSecondary : theme.colors.backgroundSecondary,
-          color: managesScans ? '#000' : theme.colors.contentPrimary,
+          border: `1px ${colors.dashed ? 'dashed' : 'solid'} ${colors.border}`,
+          backgroundColor: colors.background,
+          color: scope.status === 'never' ? theme.colors.contentTertiary : theme.colors.contentPrimary,
           cursor: 'pointer',
           fontVariantNumeric: 'tabular-nums',
           ...theme.typography.LabelSmall,
@@ -155,18 +159,16 @@ export function CoveragePage() {
       {coverage.loading && !data ? <Loading /> : null}
       {data ? (
         <>
-          <div className={css({ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: theme.sizing.scale600, marginBottom: theme.sizing.scale600 })}>
-            <Stat label={t('Resources', '资源总数')} value={total.toLocaleString()} />
-            <Stat label={t('Regions in use', '启用的区域')} value={data.enabled_regions.length || '—'} hint={data.enabled_regions.join(', ') || undefined} />
-            <Stat label={t('Data refreshed', '数据更新')} value={lastSuccess ? <When value={lastSuccess} /> : '—'} />
-            {managesScans ? (
-              <Stat
-                label={t('Needs attention', '需要关注')}
-                value={problems}
-                hint={t(`${never} never scanned`, `${never} 个尚未扫描`)}
-              />
-            ) : null}
-          </div>
+          <Facts
+            items={[
+              { label: t('Resources', '资源总数'), value: total.toLocaleString() },
+              { label: t('Regions in use', '启用的区域'), value: data.enabled_regions.length || '—', hint: data.enabled_regions.join(', ') || undefined },
+              { label: t('Data refreshed', '数据更新'), value: lastSuccess ? <When value={lastSuccess} /> : '—' },
+              ...(managesScans
+                ? [{ label: t('Needs attention', '需要关注'), value: problems, hint: t(`${never} never scanned`, `${never} 个尚未扫描`) }]
+                : []),
+            ]}
+          />
           <Panel
             title={t('By type and region', '按类型与区域')}
             actions={
@@ -174,8 +176,17 @@ export function CoveragePage() {
                 <div className={css({ display: 'flex', gap: theme.sizing.scale500, flexWrap: 'wrap', alignItems: 'center' })}>
                   {(['succeeded', 'failed', 'auth_denied', 'never'] as const).map((status) => (
                     <span key={status} className={css({ display: 'inline-flex', alignItems: 'center', gap: theme.sizing.scale200, ...theme.typography.ParagraphXSmall })}>
-                      <span className={css({ width: '12px', height: '12px', borderRadius: '3px', backgroundColor: STATUS_COLORS[status], border: `1px solid ${STATUS_BORDERS[status]}` })} />
-                      <StatusTag status={status} />
+                      <span
+                        className={css({
+                          width: '12px',
+                          height: '12px',
+                          borderRadius: '3px',
+                          boxSizing: 'border-box',
+                          backgroundColor: statusColors(status, theme).background,
+                          border: `1px ${statusColors(status, theme).dashed ? 'dashed' : 'solid'} ${statusColors(status, theme).border}`,
+                        })}
+                      />
+                      {statusLabel(status, lang)}
                     </span>
                   ))}
                 </div>

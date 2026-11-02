@@ -25,9 +25,11 @@ Build commands for the release workflow. Deployment itself is done by Terraform
 ## 发布
 
 1. 组件代码有变化时，在同一个 PR 中升高 `versions.json` 中它的版本（ECR 的 tag 不可变，同一版本不能重复推送）。
-2. 构建并推送：
+2. 构建并推送（需要 Podman、python3、AWS CLI 以及 ECR 推送权限）：
 
 ```bash
+aws ecr get-login-password --region ap-east-1 \
+  | podman login --username AWS --password-stdin <account>.dkr.ecr.ap-east-1.amazonaws.com
 image=$(deploy/build.sh api)
 podman tag "$image" <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
 podman push <account>.dkr.ecr.ap-east-1.amazonaws.com/$image
